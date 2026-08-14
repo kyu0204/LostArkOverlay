@@ -1,0 +1,47 @@
+{
+ "sup_purple": {
+  "hashes": [
+   "e8c8d8e0c8e8cc94"
+  ],
+  "hues": [
+   286.97938408579955
+  ],
+  "ignore": false
+ },
+ "sup_blue": {
+  "hashes": [
+   "cce0cccce8e8cc94"
+  ],
+  "hues": [
+   208.6953059380742
+  ],
+  "ignore": false
+ },
+ "sup_gold": {
+  "hashes": [
+   "ccecaa69cce8cc94"
+  ],
+  "hues": [
+   46.762282927354335
+  ],
+  "ignore": false
+ },
+ "sup_red": {
+  "hashes": [
+   "f0ecfcf0e8e8cc94"
+  ],
+  "hues": [
+   4.808135561305892
+  ],
+  "ignore": false
+ },
+ "overflow_counter": {
+  "hashes": [
+   "d020a0e0e060a012"
+  ],
+  "hues": [
+   103.21564439524006
+  ],
+  "ignore": false
+ }
+}
