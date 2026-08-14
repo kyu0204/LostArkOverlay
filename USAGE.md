@@ -141,27 +141,36 @@ python icon_tool.py test captures/파일.png --y 913 941
 | `sup_red` / `sup_gold` / `sup_blue` / `sup_purple` | 서폿 버프 4종 |
 | `overflow_counter` | 버프창 초과 표시 |
 
-### buffs.json 채우기
+### 버프 이름 붙이기
 
-`icon_tool.py`로 등록한 ID와 같은 키로 이름과 지속시간을 넣습니다.
+```bash
+python buff_editor.py
+```
+
+등록된 아이콘이 썸네일과 함께 뜹니다. 보면서 이름/종류/우선순위/색을
+고치세요. ID를 바꾸면 `icons.json`과 `icon_images/`의 파일명까지 함께
+옮겨 줍니다(세 곳이 어긋나면 인식은 되는데 이름이 안 뜹니다).
+
+잘못 등록한 아이콘은 `삭제`로 뺄 수 있습니다.
 
 ```json
 {
   "sup_red": {
     "name": "용맹의 축복",
     "type": "buff",
-    "duration": 10.0,
+    "duration": null,
     "priority": 1,
     "color": "#ff5252"
   }
 }
 ```
 
-`duration`은 **인게임에서 직접 재서** 넣으세요. 각인이나 밸패에 따라
-달라지므로 추정치를 쓰면 안 됩니다.
+**`duration`은 채우지 않습니다(null).** 같은 버프라도 어떤 스킬로
+걸었느냐에 따라 지속시간이 달라져, 고정값은 틀린 타이머가 됩니다.
+남은 시간은 화면의 지속시간 표기를 읽어서만 채우고, 읽지 못한
+버프는 추적하지 않습니다.
 
-글자 템플릿을 다 모았다면 화면에서 실시간으로 읽으므로 `duration`은
-폴백용이 됩니다. 그래도 채워두는 편이 안전합니다.
+`type`이 `instant`면 타이머 대상에서 빠집니다.
 
 ---
 

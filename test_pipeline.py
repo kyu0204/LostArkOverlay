@@ -70,12 +70,18 @@ class TestRecognizer(unittest.TestCase):
         self.assertEqual([o.buff_id for o in res.observations], ["a"])
         self.assertEqual(res.visible, 1)
 
-    def test_grid_is_cached(self):
+    def test_grid_geometry_is_stable_across_frames(self):
+        # 매 프레임 다시 잡지만, 화면이 같으면 결과도 같아야 한다.
+        # (객체 동일성이 아니라 기하가 같은지를 본다)
         frame = build_frame(list(self.tiles.values()))
         self.rec.read_frame(frame)
         first = self.rec._grid
         self.rec.read_frame(frame)
-        self.assertIs(self.rec._grid, first)
+        now = self.rec._grid
+        self.assertEqual(
+            (first.left, first.cell, first.pitch, first.count),
+            (now.left, now.cell, now.pitch, now.count),
+        )
 
     def test_single_icon_works_once_grid_cached(self):
         # 버프가 1개만 남아도 인식되어야 한다. 1개로는 피치를 추정할 수
@@ -95,6 +101,31 @@ class TestRecognizer(unittest.TestCase):
         res = self.rec.read_frame(blank)
         self.assertEqual(res.observations, [])
         self.assertIsNone(res.grid)
+
+    def test_grid_kept_while_bar_is_visible_even_if_icons_unknown(self):
+        # 등록되지 않은 아이콘만 보여도 버프바 자체는 검출되므로
+        # 그리드를 버릴 이유가 없다. (배율이 바뀌었다면 새로 잡힌 값이
+        # 반영되므로 굳이 None으로 되돌릴 필요도 없다)
+        self.rec.read_frame(build_frame(list(self.tiles.values())))
+        unknown = build_frame([icon(60, 77), icon(60, 78), icon(60, 79)])
+        for _ in range(40):
+            self.rec.read_frame(unknown)
+        self.assertIsNotNone(self.rec._grid)
+
+    def test_stale_grid_dropped_when_bar_disappears(self):
+        # 바가 아예 사라지면(검출도 실패, 인식도 0) 오래된 좌표를
+        # 붙들고 있을 이유가 없다. 30프레임 뒤 버린다.
+        self.rec.read_frame(build_frame(list(self.tiles.values())))
+        self.assertIsNotNone(self.rec._grid)
+
+        blank = np.zeros((44, 200, 3), np.uint8)
+        for i in range(29):
+            self.rec.read_frame(blank)
+            self.assertIsNotNone(
+                self.rec._grid, f"{i + 1}번째: 30번째 전에는 유지해야 한다"
+            )
+        self.rec.read_frame(blank)
+        self.assertIsNone(self.rec._grid)
 
 
 class TestOverflowCell(unittest.TestCase):
@@ -186,3 +217,117 @@ class TestEndToEnd(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestGridFollowsMovement(unittest.TestCase):
+    """버프바가 가로로 밀려도 따라가야 한다.
+
+    그리드를 한 번 잡고 계속 쓰면 좌표가 굳는다. dHash가 견디는 것은
+    ±1px뿐이라 그보다 밀리면 매칭이 통째로 무너진다. 게다가 재검출
+    조건이 '연속 미인식'이면, 일부만 맞는 상태에서는 연속이 끊겨
+    영영 복구되지 않는다. 그래서 매 프레임 다시 잡는다.
+    """
+
+    def setUp(self):
+        self.tiles = {"a": icon(10, 3), "b": icon(120, 3), "c": icon(250, 3)}
+        self.icons = IconBook()
+        for k, v in self.tiles.items():
+            self.icons.add(k, v[2:24, 2:24])
+        self.rec = Recognizer(icons=self.icons, glyphs=GlyphBook(), icon_row_h=26)
+
+    def _shifted(self, dx):
+        """왼쪽에 dx만큼 여백을 넣어 바가 오른쪽으로 밀린 프레임."""
+        frame = build_frame(list(self.tiles.values()))
+        pad = np.zeros((frame.shape[0], dx, 3), np.uint8)
+        return np.hstack([pad, frame])
+
+    def test_phase_is_locked_while_bar_stays_put(self):
+        # 버프바는 오른쪽 끝이 고정이고 왼쪽으로만 늘어난다. 즉 셀 경계의
+        # 위상은 세션 내내 상수다. 버프 수가 변해도 인식이 흔들리면 안 된다.
+        full = build_frame(list(self.tiles.values()))
+        for _ in range(3):
+            self.rec.read_frame(full)
+        two = build_frame([self.tiles["a"], self.tiles["b"]])
+        res = self.rec.read_frame(two)
+        self.assertEqual(sorted(o.buff_id for o in res.observations), ["a", "b"])
+        res = self.rec.read_frame(full)
+        self.assertEqual(
+            sorted(o.buff_id for o in res.observations), ["a", "b", "c"]
+        )
+
+    def test_recovers_if_bar_actually_moves(self):
+        # 해상도 변경 등으로 ROI 자체가 어긋나면 위상이 틀어진다.
+        # 인식이 끊기면 다시 맞춰 스스로 복구해야 한다.
+        self.rec.read_frame(build_frame(list(self.tiles.values())))
+        moved = self._shifted(13)
+        for _ in range(15):
+            res = self.rec.read_frame(moved)
+        self.assertEqual(
+            sorted(o.buff_id for o in res.observations), ["a", "b", "c"],
+            "바가 실제로 밀렸을 때 재보정으로 복구되지 않았다",
+        )
+
+    def test_keeps_grid_when_detection_fails(self):
+        # 버프가 1개만 남으면 피치를 추정할 수 없다. 이때는 이전 그리드를
+        # 유지해야 인식이 끊기지 않는다 (캐시가 있는 원래 이유).
+        self.rec.read_frame(build_frame(list(self.tiles.values())))
+        before = self.rec._grid
+        self.assertIsNotNone(before)
+
+        full = build_frame(list(self.tiles.values()))
+        one = np.zeros_like(full)
+        one[:, :26] = full[:, :26]          # 첫 칸만 남긴다
+        res = self.rec.read_frame(one)
+
+        self.assertIsNotNone(self.rec._grid)
+        self.assertEqual(self.rec._grid.pitch, before.pitch)
+        self.assertEqual([o.buff_id for o in res.observations], ["a"])
+
+
+class TestVerticalAlignment(unittest.TestCase):
+    """ROI 세로 위치가 몇 px 어긋나도 스스로 맞춘다.
+
+    ROI는 사람이 잡으므로 정확할 수 없는데, dHash는 ±1px까지만 견딘다.
+    실측에서 수련장 캡처가 4px 어긋나 인식 0개였고, 전투 캡처는 4px
+    어긋나 14개 중 7개만 맞았다. 일부만 맞는 상태는 '실패'로 보이지
+    않아 미인식 복구 경로에도 걸리지 않으므로, 시작할 때 한 번 맞춘다.
+    """
+
+    def setUp(self):
+        self.tiles = {"a": icon(10, 3), "b": icon(120, 3), "c": icon(250, 3)}
+        self.icons = IconBook()
+        for k, v in self.tiles.items():
+            self.icons.add(k, v[2:24, 2:24])
+
+    def _frame_with_margin(self, top_pad):
+        """아이콘 행 위에 top_pad만큼 배경을 덧붙인 프레임."""
+        frame = build_frame(list(self.tiles.values()))
+        pad = np.zeros((top_pad, frame.shape[1], 3), np.uint8)
+        return np.vstack([pad, frame])
+
+    def test_recovers_from_vertical_offset(self):
+        for pad in (0, 2, 4, 6):
+            rec = Recognizer(icons=self.icons, glyphs=GlyphBook())
+            frame = self._frame_with_margin(pad)
+            for _ in range(3):
+                res = rec.read_frame(frame)
+            self.assertEqual(
+                sorted(o.buff_id for o in res.observations), ["a", "b", "c"],
+                f"{pad}px 아래로 밀렸을 때 인식이 회복되지 않았다",
+            )
+
+    def test_calibration_runs_only_once(self):
+        rec = Recognizer(icons=self.icons, glyphs=GlyphBook())
+        frame = self._frame_with_margin(4)
+        rec.read_frame(frame)
+        self.assertTrue(rec._calibrated)
+        top = rec._icon_top
+        for _ in range(5):
+            rec.read_frame(frame)
+        self.assertEqual(rec._icon_top, top)
+
+    def test_no_calibration_without_icon_db(self):
+        # DB가 비어 있으면 무엇이 맞는지 판단할 근거가 없다
+        rec = Recognizer(icons=IconBook(), glyphs=GlyphBook())
+        rec.read_frame(self._frame_with_margin(4))
+        self.assertEqual(rec._icon_top, 0)

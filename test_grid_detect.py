@@ -96,6 +96,12 @@ class TestDetectGrid(unittest.TestCase):
         self.assertIsNotNone(g)
         self.assertAlmostEqual(g.pitch, 29.0, delta=0.6)
 
+    def test_red_border(self):
+        # sup_red 아이콘 테두리 색. border_mask의 reddish 분기 검증.
+        g = detect_grid(make_bar(border=(30, 30, 200), n=6))
+        self.assertIsNotNone(g)
+        self.assertAlmostEqual(g.pitch, 29.0, delta=0.6)
+
     def test_rejects_blank(self):
         self.assertIsNone(detect_grid(np.full((28, 300, 3), 20, np.uint8)))
 
@@ -128,3 +134,37 @@ class TestGridGeometry(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestAutocorrFallback(unittest.TestCase):
+    """색 임계값이 무너져도 주기로 그리드를 잡는다.
+
+    border_mask는 고정 색 임계값을 쓰므로 밝은 배경에서 경계에 아슬아슬
+    하게 걸친다. 실측: 같은 화면을 파일로 저장한 것과 화면에서 다시
+    캡처한 것의 픽셀 평균차가 6뿐인데도 피치가 28.8 vs 84.6으로 갈렸다.
+    아이콘 좌우 테두리가 만드는 '주기'는 색과 무관하므로 이를 쓴다.
+    """
+
+    def test_autocorr_finds_pitch(self):
+        from grid_detect import pitch_by_autocorr
+
+        pitch, score = pitch_by_autocorr(make_bar(cell=26, pitch=29.0, n=8))
+        self.assertAlmostEqual(pitch, 29.0, delta=1.0)
+        self.assertGreater(score, 0.25)
+
+    def test_grid_found_when_border_color_fails(self):
+        # 테두리를 무채색으로 바꿔 border_mask가 아무것도 못 잡게 만든다.
+        # (내부 무늬도 끈다. 무늬의 랜덤 색이 마스크를 통과해 버린다)
+        bar = make_bar(
+            cell=26, pitch=29.0, n=8, border=(150, 150, 150), noisy=False
+        )
+        from grid_detect import border_mask
+
+        self.assertEqual(border_mask(bar).sum(), 0, "이 테스트는 마스크가 비어야 유효")
+        g = detect_grid(bar)
+        self.assertIsNotNone(g, "주기 폴백이 동작하지 않았다")
+        self.assertAlmostEqual(g.pitch, 29.0, delta=1.5)
+
+    def test_rejects_flat_image(self):
+        # 아무 구조도 없으면 주기도 없다
+        self.assertIsNone(detect_grid(np.full((28, 300, 3), 20, np.uint8)))

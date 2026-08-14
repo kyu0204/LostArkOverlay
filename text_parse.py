@@ -116,6 +116,63 @@ def adaptive_binarize(
     return best, best_thr
 
 
+# 지속시간 글자 색. OpenCV의 H는 0~179라 실제 각도의 절반이므로,
+# 아래 값은 2배한 실제 각도 기준이다. (README의 'H≈49'는 원시값이다)
+# 실측 분포: 글자 Hue 60~110, 채도 34~132, 명도 119~227.
+TEXT_HUE_GREEN = 100.0
+TEXT_HUE_ORANGE = 50.0
+TEXT_HUE_WIN = 26.0
+TEXT_SAT_MIN = 30
+TEXT_VAL_MIN = 110
+
+
+def text_color_mask(
+    bgr: np.ndarray,
+    hue_win: float = TEXT_HUE_WIN,
+    sat_min: int = TEXT_SAT_MIN,
+    val_min: int = TEXT_VAL_MIN,
+) -> np.ndarray:
+    """지속시간 글자 색만 남긴 이진 마스크.
+
+    밝기만 보는 이진화는 배경이 밝아지면 무너진다. 글자 색은 녹색과
+    주황 두 가지로 고정돼 있으므로, 색을 함께 보면 폭발 이펙트처럼
+    밝지만 색이 다른 배경을 훨씬 잘 걸러낸다.
+
+    다만 수련장 금색 바닥처럼 배경 색이 주황 글자와 겹치면 마스크가
+    통째로 켜진다. 그 경우는 segment_glyphs의 max_fill이 걸러내므로
+    호출부가 밝기 기반 결과로 넘어가면 된다.
+    """
+    import cv2
+
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    h = hsv[:, :, 0].astype(int) * 2
+    s = hsv[:, :, 1].astype(int)
+    v = hsv[:, :, 2].astype(int)
+    greenish = np.abs(h - TEXT_HUE_GREEN) < hue_win
+    orangish = np.abs(h - TEXT_HUE_ORANGE) < hue_win * 0.7
+    return ((greenish | orangish) & (s > sat_min) & (v > val_min)).astype(np.uint8)
+
+
+def text_tophat_mask(bgr: np.ndarray, ksize: int = 5) -> np.ndarray:
+    """주변보다 밝은 얇은 구조만 남긴다 (모폴로지 top-hat).
+
+    글자는 '배경보다 밝다'가 아니라 '바로 옆보다 밝다'는 성질이 있다.
+    전역 임계값은 배경 밝기가 바뀌면 무너지지만 이 성질은 유지되므로,
+    수련장 금색 바닥처럼 배경이 밝은 장면에서도 글자가 남는다.
+
+    ksize는 글자 획보다 크고 글자 전체보다 작아야 한다. 실측 글자
+    높이가 8px이라 5가 잘 맞았다(7, 9는 배경을 더 끌어온다).
+    임계값은 Otsu로 잡는다. 장면마다 대비가 달라 고정값을 쓰기 어렵다.
+    """
+    import cv2
+
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (ksize, ksize))
+    hat = cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, kernel)
+    _, bw = cv2.threshold(hat, 0, 1, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return bw.astype(np.uint8)
+
+
 def _merge_overlapping(boxes, overlap: float = 0.8, max_w: int = 12):
     """x 구간이 크게 겹치는 성분들을 병합한다.
 
@@ -225,7 +282,36 @@ def segment_glyphs(
                 Glyph(gx, ty, gw, th, (bw[ty:ty + th, gx:gx + gw] > 0).astype(np.uint8))
             )
     out.sort(key=lambda g: g.x)
-    return out
+    return _drop_noise(out, min_h)
+
+
+def _drop_noise(glyphs: List[Glyph], min_h: int) -> List[Glyph]:
+    """글자 높이에 못 미치는 조각을 버린다.
+
+    같은 줄의 글자는 높이가 고르다(실측 8px). 배경 이펙트가 남긴
+    조각은 3~4px로 눈에 띄게 낮은데, min_h를 소수점(1~2px) 때문에
+    낮춰 놓아 그대로 통과한다. 그 조각이 글자 옆에 붙으면 같은 그룹에
+    묶여 '8초'가 4조각이 되고, 조각 수가 안 맞아 그룹 전체가 버려진다.
+
+    소수점만은 살려야 하므로 '아주 낮고(<=2px) 밑선이 글자와 맞는' 것은
+    예외로 둔다. 소수점은 baseline에 붙어 있고 노이즈는 대개 그렇지 않다.
+    """
+    if len(glyphs) < 2:
+        return glyphs
+
+    heights = sorted(g.h for g in glyphs)
+    median_h = heights[len(heights) // 2]
+    if median_h <= min_h:
+        return glyphs   # 전부 작다면 기준으로 삼을 게 없다
+
+    baseline = max(g.y + g.h for g in glyphs)
+    kept = []
+    for g in glyphs:
+        if g.h >= median_h * 0.6:
+            kept.append(g)
+        elif g.h <= 2 and abs((g.y + g.h) - baseline) <= 1:
+            kept.append(g)   # 소수점
+    return kept or glyphs
 
 
 def group_glyphs(glyphs: List[Glyph], max_gap: int = 4) -> List[List[Glyph]]:
@@ -269,7 +355,14 @@ class GlyphBook:
         self.templates.setdefault(label, []).append(normalize_glyph(glyph_img))
 
     def match(self, glyph_img: np.ndarray) -> Tuple[Optional[str], float]:
-        """가장 잘 맞는 라벨과 일치율(0~1)."""
+        """가장 잘 맞는 라벨과 일치율(0~1).
+
+        아이콘 매칭과 달리 ±1px 시프트를 시도하지 않는다. 시도해 봤더니
+        숫자끼리 혼동이 늘어 오히려 나빠졌다(실측: 수련장 캡처가 7칸 ->
+        4칸으로 줄고, '0.3초'를 '3.0'으로 읽는 오독까지 생겼다).
+        글자는 10x14로 이미 정규화돼 있어 아이콘만큼 정렬에 예민하지 않고,
+        후보가 12종뿐이라 서로 가까워 여유를 주면 바로 섞인다.
+        """
         if not self.templates:
             return None, 0.0
         v = normalize_glyph(glyph_img)
@@ -294,15 +387,19 @@ class GlyphBook:
     def load(path: Path = TEMPLATE_PATH) -> "GlyphBook":
         if not path.exists():
             return GlyphBook()
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        tpl = {
-            label: [
-                np.array([int(c) for c in s], np.uint8).reshape(GLYPH_H, GLYPH_W)
-                for s in samples
-            ]
-            for label, samples in raw.items()
-        }
-        return GlyphBook(tpl)
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            tpl = {
+                label: [
+                    np.array([int(c) for c in s], np.uint8).reshape(GLYPH_H, GLYPH_W)
+                    for s in samples
+                ]
+                for label, samples in raw.items()
+            }
+            return GlyphBook(tpl)
+        except Exception:
+            # 템플릿이 깨졌다고 프로그램이 죽으면 안 된다. 빈 템플릿으로 간다.
+            return GlyphBook()
 
 
 # ----------------------------------------------------------------------
@@ -338,6 +435,14 @@ def to_seconds(
 
     if not body:
         return None
+
+    # 앞자리 0 뒤에 숫자가 오는 표기는 게임에 없다('03초'는 '3초'로 뜬다).
+    # 이런 문자열이 나왔다면 소수점을 놓친 것이다. 실제로 '.' 템플릿이
+    # 없을 때 '0.3초'가 '03초'로 읽혀 3.0이 되는 오독을 관측했다.
+    # 10배 오차라 못 읽는 편이 훨씬 낫다.
+    if len(body) >= 2 and body[0] == "0" and body[1].isdigit():
+        return None
+
     try:
         value = float(body)
     except ValueError:
@@ -418,7 +523,7 @@ def parse_durations(
     gray = cv2.cvtColor(text_bgr, cv2.COLOR_BGR2GRAY)
     bw = binarize(gray, thr)
     glyphs = segment_glyphs(bw)
-    groups = group_glyphs(glyphs)
+    groups = group_glyphs(glyphs, max_gap=3)  # Recognizer._read_durations와 동일 값
     assigned = assign_to_cells(groups, cell_centers, max_dist=pitch * 0.9)
 
     out: Dict[int, float] = {}

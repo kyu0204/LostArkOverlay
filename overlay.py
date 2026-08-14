@@ -30,11 +30,13 @@ from PySide6.QtGui import (
     QPainter,
     QPainterPath,
     QPen,
+    QPixmap,
 )
 from PySide6.QtWidgets import QApplication, QWidget
 
 import config
 from buff_state import CONF_PREDICTED, BuffTracker, Observation
+from icon_match import ICON_IMG_DIR
 
 # 레이아웃 상수
 ROW_H = 40
@@ -42,6 +44,23 @@ ROW_GAP = 4
 ICON = 30
 PAD = 8
 WIDTH = 230
+
+# 상태 표시. 버프가 하나도 없을 때 화면이 비어 있으면 앱이 켜져 있는지
+# 알 수 없다. 무엇까지 되고 있는지도 함께 보여준다.
+ST_OK = "ok"                # 버프바를 찾았고 인식 중
+ST_SEARCHING = "searching"  # 캡처는 되는데 버프바를 못 찾음
+ST_ERROR = "error"          # 캡처 자체가 실패
+
+STATUS_TEXT = {
+    ST_OK: "인식 중",
+    ST_SEARCHING: "버프바 찾는 중",
+    ST_ERROR: "캡처 실패",
+}
+STATUS_COLOR = {
+    ST_OK: QColor(129, 199, 132),
+    ST_SEARCHING: QColor(255, 179, 0),
+    ST_ERROR: QColor(255, 82, 82),
+}
 FONT_STACK = ["Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans CJK KR", "sans-serif"]
 
 
@@ -99,6 +118,9 @@ class BuffOverlay(QWidget):
         self.setup_mode = setup_mode
         self.rows: list[dict] = []
         self._drag_from: QPointF | None = None
+        self._icon_cache: dict[str, QPixmap | None] = {}
+        self._status = (ST_SEARCHING, "")
+        self._beat = 0
 
         flags = (
             Qt.FramelessWindowHint
@@ -119,6 +141,28 @@ class BuffOverlay(QWidget):
         self.font_name = QFont(FONT_STACK[0], 10, QFont.DemiBold)
         self.font_time = QFont(FONT_STACK[0], 11, QFont.Bold)
 
+    # -- 아이콘 이미지 ---------------------------------------------------
+
+    def _icon_pixmap(self, buff_id):
+        """등록된 아이콘 원본. 없으면 None.
+
+        10Hz로 다시 그리므로 한 번 읽은 것은 캐시한다. 없는 것도
+        None으로 캐시해 매 프레임 디스크를 두드리지 않게 한다.
+        """
+        if not buff_id:
+            return None
+        if buff_id in self._icon_cache:
+            return self._icon_cache[buff_id]
+
+        path = ICON_IMG_DIR / f"{buff_id}.png"
+        pix = None
+        if path.exists():
+            loaded = QPixmap(str(path))
+            if not loaded.isNull():
+                pix = loaded
+        self._icon_cache[buff_id] = pix
+        return pix
+
     # -- 데이터 주입 -----------------------------------------------------
 
     def set_rows(self, rows: list[dict]) -> None:
@@ -126,7 +170,11 @@ class BuffOverlay(QWidget):
         h = max(1, len(rows)) * (ROW_H + ROW_GAP) + PAD * 2
         if h != self.height():
             self.resize(WIDTH, h)
+        self._beat += 1          # 살아 있다는 표시(점이 깜빡인다)
         self.update()
+
+    def set_status(self, state: str, detail: str = "") -> None:
+        self._status = (state, detail)
 
     # -- 렌더링 ----------------------------------------------------------
 
@@ -148,8 +196,42 @@ class BuffOverlay(QWidget):
             p.setPen(QColor(200, 220, 255))
             p.setFont(self.font_name)
             p.drawText(self.rect(), Qt.AlignCenter, "드래그해서 위치 조정")
+        elif not self.rows:
+            # 버프가 없을 때 화면이 완전히 비면 앱이 죽은 것과 구분되지
+            # 않는다. 작게라도 살아 있음을 남긴다.
+            self._paint_status(p, PAD)
 
         p.end()
+
+    def _paint_status(self, p: QPainter, y: int) -> None:
+        state, detail = self._status
+        color = STATUS_COLOR.get(state, STATUS_COLOR[ST_SEARCHING])
+        text = STATUS_TEXT.get(state, state)
+        if detail:
+            text += f"  {detail}"
+
+        p.setFont(self.font_name)
+        fm = QFontMetrics(self.font_name)
+        w = fm.horizontalAdvance(text) + 34
+        pill = QRectF(PAD, y + 4, min(w, self.width() - PAD * 2), 22)
+
+        path = QPainterPath()
+        path.addRoundedRect(pill, 11, 11)
+        p.fillPath(path, QColor(12, 15, 20, 190))
+
+        # 점은 프레임마다 밝기가 바뀐다. 멈춰 있으면 깜빡임도 멈춘다.
+        dot = QColor(color)
+        dot.setAlpha(255 if self._beat % 2 == 0 else 120)
+        p.setBrush(QBrush(dot))
+        p.setPen(Qt.NoPen)
+        p.drawEllipse(QRectF(pill.left() + 8, pill.center().y() - 4, 8, 8))
+
+        p.setPen(QColor(220, 230, 240, 220))
+        p.drawText(
+            QRectF(pill.left() + 22, pill.top(), pill.width() - 26, pill.height()),
+            Qt.AlignLeft | Qt.AlignVCenter,
+            text,
+        )
 
     def _paint_row(self, p: QPainter, y: int, row: dict) -> None:
         predicted = row.get("confidence") == CONF_PREDICTED
@@ -186,21 +268,41 @@ class BuffOverlay(QWidget):
         p.setBrush(Qt.NoBrush)
         p.drawRoundedRect(body, 6, 6)
 
-        # 아이콘 자리 (인식 파이프라인 붙기 전 플레이스홀더)
+        # 아이콘. 등록된 원본이 있으면 그걸 그리고, 없으면 색 사각형으로 둔다.
         icon = QRectF(body.left() + 5, y + (ROW_H - ICON) / 2, ICON, ICON)
-        ib = QColor(accent)
-        ib.setAlpha(90 if predicted else 160)
-        p.setBrush(QBrush(ib))
-        p.setPen(QPen(QColor(0, 0, 0, 120), 1))
-        p.drawRoundedRect(icon, 4, 4)
+        pix = self._icon_pixmap(row.get("id"))
+        if pix is not None:
+            p.save()
+            clip = QPainterPath()
+            clip.addRoundedRect(icon, 4, 4)
+            p.setClipPath(clip)
+            if predicted:
+                p.setOpacity(0.55)   # 추정치는 아이콘도 흐리게
+            p.drawPixmap(icon.toRect(), pix)
+            p.restore()
+            p.setBrush(Qt.NoBrush)
+            p.setPen(QPen(QColor(0, 0, 0, 120), 1))
+            p.drawRoundedRect(icon, 4, 4)
+        else:
+            ib = QColor(accent)
+            ib.setAlpha(90 if predicted else 160)
+            p.setBrush(QBrush(ib))
+            p.setPen(QPen(QColor(0, 0, 0, 120), 1))
+            p.drawRoundedRect(icon, 4, 4)
 
         # 남은시간 (우측 정렬, 먼저 폭을 확보)
-        remaining = float(row.get("remaining", 0.0))
-        t_text = f"{remaining:.1f}"
+        # 화면에서 시간을 읽지 못하면 숫자 대신 '?'를 쓴다. 0이나 추정치를
+        # 보여주면 유저가 그걸 딜사이클에 쓰게 되어 없느니만 못하다.
+        remaining = row.get("remaining")
+        known = remaining is not None
+        t_text = f"{float(remaining):.1f}" if known else "?"
         p.setFont(self.font_time)
         t_w = QFontMetrics(self.font_time).horizontalAdvance(t_text) + 6
         t_rect = QRectF(body.right() - t_w - 8, y, t_w, ROW_H)
-        p.setPen(QColor(255, 255, 255, 200 if predicted else 255))
+        if known:
+            p.setPen(QColor(255, 255, 255, 200 if predicted else 255))
+        else:
+            p.setPen(QColor(255, 255, 255, 110))   # 흐리게 = 근거 없음
         p.drawText(t_rect, Qt.AlignRight | Qt.AlignVCenter, t_text)
 
         # 이름 (남는 공간에 맞춰 말줄임)
@@ -278,6 +380,9 @@ class DemoFeed:
         self.tracker.update(obs, now)
         return self.tracker.snapshot(now)
 
+    def status(self):
+        return (ST_OK, "데모")
+
 
 # ----------------------------------------------------------------------
 
@@ -302,7 +407,11 @@ def main() -> int:
 
     feed = DemoFeed()
     timer = QTimer()
-    timer.timeout.connect(lambda: w.set_rows(feed.step()))
+    def tick():
+        w.set_rows(feed.step())
+        w.set_status(*feed.status())
+
+    timer.timeout.connect(tick)
     timer.start(100)  # 10Hz
 
     if args.setup:

@@ -24,6 +24,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
+import cv2
 import numpy as np
 
 
@@ -150,6 +151,31 @@ def _pitch_from_lefts(lefts, tol: float = 0.15):
     return pitch, best_score
 
 
+def pitch_by_autocorr(roi_bgr, lo: int = 12, hi: int = 60):
+    """세로 경계의 주기를 자기상관으로 찾는다. 반환: (피치, 신뢰도).
+
+    `border_mask`는 색 임계값을 쓰므로 밝은 배경에서 경계에 아슬아슬하게
+    걸친다. 실측: 같은 화면인데 파일로 저장한 것과 화면에서 다시 캡처한
+    것의 픽셀 평균차가 6밖에 안 되는데도, 한쪽은 피치 28.8을, 다른 쪽은
+    84.6을 내놨다.
+
+    아이콘 좌우 테두리는 일정 간격으로 세로 경계를 만든다. 그 간격은
+    색이 아니라 '주기'라서 밝기가 변해도 남는다.
+    """
+    gray = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    prof = np.abs(cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)).sum(axis=0)
+    prof = prof - prof.mean()
+    if prof.std() < 1e-6:
+        return None, 0.0
+    ac = np.correlate(prof, prof, mode="full")[len(prof) - 1:]
+    ac = ac / (ac[0] + 1e-9)
+    hi = min(hi, len(ac) - 1)
+    if hi <= lo:
+        return None, 0.0
+    k = int(np.argmax(ac[lo:hi])) + lo
+    return float(k), float(ac[k])
+
+
 def detect_grid(roi_bgr, min_cells: int = 2):
     """ROI에서 셀 크기와 피치를 추정한다.
 
@@ -167,8 +193,6 @@ def detect_grid(roi_bgr, min_cells: int = 2):
 
     mask = border_mask(roi_bgr)
     rows = _border_rows(mask)
-    if not rows:
-        return None
 
     best = None
     for ry in rows:
@@ -197,11 +221,35 @@ def detect_grid(roi_bgr, min_cells: int = 2):
         if best is None or explained > best[0]:
             best = cand
 
-    if best is None:
-        return None
+    # 색 임계값에 기대지 않는 주기 추정으로 교차 검증한다.
+    ac_pitch, ac_score = pitch_by_autocorr(roi_bgr)
+    trusted_ac = ac_pitch is not None and ac_score >= 0.25
 
-    _, left, cell, pitch = best
+    if best is None:
+        # 테두리를 하나도 못 찾았어도 주기가 보이면 그걸로 간다.
+        # 시작 위치는 알 수 없으므로 0으로 두고, 위상은 인식 결과로
+        # 맞춘다(Recognizer.recalibrate).
+        if not trusted_ac:
+            return None
+        pitch = ac_pitch
+        left, cell = 0.0, int(round(pitch * 0.9))
+    else:
+        _, left, cell, pitch = best
+        if trusted_ac and abs(pitch - ac_pitch) > ac_pitch * 0.15:
+            # 테두리 기반 추정이 주기와 크게 어긋난다. 배경을 테두리로
+            # 오인한 경우이므로 주기 쪽을 믿는다.
+            pitch = ac_pitch
+            left, cell = 0.0, int(round(pitch * 0.9))
+
     cell = max(4, min(cell, int(round(pitch))))
+
+    # 테두리가 뭉개지면(영상 압축, 색 프로파일 차이) 연속 구간이 조각나
+    # 폭이 실제보다 짧게 잡힌다. 반면 피치는 봉우리 '시작 위치'의
+    # 주기에서 나오므로 같은 상황에서도 잘 버틴다.
+    # 실측 두 배율 모두 cell/pitch ≈ 0.90 (26/29.0, 21/23.33)이므로,
+    # 그보다 크게 벗어나면 폭 추정이 무너진 것으로 보고 피치에서 되돌린다.
+    if cell < pitch * 0.82:
+        cell = int(round(pitch * 0.9))
 
     # 왼쪽으로 더 뻗을 수 있는지 (첫 아이콘을 놓쳤을 수 있다)
     while left - pitch >= -0.5:

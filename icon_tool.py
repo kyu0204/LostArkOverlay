@@ -33,7 +33,7 @@ import argparse
 from pathlib import Path
 
 from grid_detect import detect_grid
-from icon_match import IconBook, identify_cells
+from icon_match import ICON_IMG_DIR, IconBook, identify_cells
 
 
 def load_row(path: Path, y0: int, y1: int, x0: int, x1: int):
@@ -97,6 +97,19 @@ def cmd_preview(args) -> int:
     return 0
 
 
+def save_thumb(buff_id: str, tile) -> None:
+    """오버레이에 띄울 아이콘 원본을 남긴다.
+
+    해시는 되돌릴 수 없으므로, 등록 시점의 타일을 그대로 보관해야
+    오버레이가 실제 아이콘을 그릴 수 있다. 같은 버프를 여러 번
+    등록하면 마지막 것으로 덮어쓴다.
+    """
+    import cv2
+
+    ICON_IMG_DIR.mkdir(exist_ok=True)
+    cv2.imwrite(str(ICON_IMG_DIR / f"{buff_id}.png"), tile)
+
+
 def cmd_add(args) -> int:
     row = load_row(Path(args.image), *args.y, args.x0, args.x1)
     g = resolve_grid(row, args)
@@ -130,6 +143,10 @@ def cmd_add(args) -> int:
             print(f"  건너뜀: 셀 {idx} 크롭이 비었습니다")
             continue
         book.add(buff_id, tile, ignore=args.ignore)
+        if not args.ignore:
+            # 표시용은 inset을 적용하지 않는다. 해시는 테두리를 빼는 편이
+            # 안정적이지만, 눈으로 보는 아이콘은 잘리지 않은 편이 낫다.
+            save_thumb(buff_id, row[:, l:r])
         print(f"  셀 {idx} -> {buff_id}" + ("  (무시 대상)" if args.ignore else ""))
         n += 1
 

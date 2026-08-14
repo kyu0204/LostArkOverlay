@@ -54,6 +54,15 @@ class TestToSeconds(unittest.TestCase):
         for bad in ("", UNIT_SEC, "..", "1.2.3", "abc"):
             self.assertIsNone(to_seconds(bad), bad)
 
+    def test_leading_zero_rejected(self):
+        # 소수점을 놓쳐 '0.3초'가 '03초'로 읽히면 0.3이 3.0이 된다(10배).
+        # 게임은 '03초' 같은 표기를 하지 않으므로 형식 단계에서 막는다.
+        self.assertIsNone(to_seconds(f"03{UNIT_SEC}"))
+        self.assertIsNone(to_seconds(f"09{UNIT_SEC}"))
+        # 소수점이 제대로 읽힌 경우는 그대로 통과해야 한다
+        self.assertAlmostEqual(to_seconds(f"0.3{UNIT_SEC}"), 0.3)
+        self.assertAlmostEqual(to_seconds(f"0.8{UNIT_SEC}"), 0.8)
+
     def test_negative_rejected(self):
         self.assertIsNone(to_seconds(f"-5{UNIT_SEC}"))
 
@@ -270,3 +279,55 @@ class TestNormalize(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestTextMasks(unittest.TestCase):
+    """밝기만으로 글자를 자르면 배경이 밝을 때 무너진다.
+
+    색(글자 색은 녹색/주황으로 고정)과 국소 대비(획은 바로 옆보다 밝다)를
+    함께 쓰는 두 마스크가 각자 언제 쓸모 있는지 고정한다.
+    """
+
+    def test_color_mask_keeps_text_drops_background(self):
+        from text_parse import text_color_mask
+
+        img = np.full((14, 40, 3), (40, 30, 30), np.uint8)   # 어두운 배경
+        img[3:11, 5:11] = (60, 200, 60)                      # 녹색 글자
+        m = text_color_mask(img)
+        self.assertGreater(m[3:11, 5:11].mean(), 0.8)
+        self.assertLess(m[:, 20:].mean(), 0.05)
+
+    def test_color_mask_floods_when_background_shares_hue(self):
+        # 수련장 금색 바닥처럼 배경이 글자색과 겹치면 마스크가 가득 찬다.
+        # 이때 segment_glyphs가 빈 목록을 돌려줘야 오독으로 이어지지 않는다.
+        from text_parse import text_color_mask
+
+        img = np.full((14, 40, 3), (40, 180, 200), np.uint8)
+        m = text_color_mask(img)
+        self.assertGreater(m.mean(), 0.45)
+        self.assertEqual(segment_glyphs(m), [])
+
+    def test_tophat_survives_bright_background(self):
+        import cv2
+
+        from text_parse import text_tophat_mask
+
+        gray = np.full((14, 40), 200, np.uint8)   # 배경이 이미 밝다
+        gray[3:11, 5:9] = 245                     # 그보다 밝은 획
+        gray[3:11, 15:19] = 245
+        img = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+        m = text_tophat_mask(img)
+        self.assertGreater(m[3:11, 5:9].mean(), 0.7)
+        self.assertLess(m[:, 25:].mean(), 0.1)
+
+    def test_tophat_ignores_wide_bright_area(self):
+        # 넓게 밝은 영역(HP 바 등)은 획이 아니므로 남지 않아야 한다
+        import cv2
+
+        from text_parse import text_tophat_mask
+
+        gray = np.full((14, 40), 60, np.uint8)
+        gray[2:12, 2:38] = 220        # 넓은 밝은 덩어리
+        img = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+        m = text_tophat_mask(img)
+        self.assertLess(m[4:10, 8:32].mean(), 0.3)

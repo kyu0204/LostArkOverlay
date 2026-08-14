@@ -57,6 +57,8 @@ class CaptureFeed:
         self._sct = mss.mss()
         self.t0 = time.perf_counter()
         self._warned_empty = False
+        self._warned_capture = False
+        self._status = ("searching", "")
 
         if not self.rec.icons.entries:
             print("[경고] icons.json이 비어 있습니다. "
@@ -68,19 +70,38 @@ class CaptureFeed:
     def step(self):
         import numpy as np
 
-        raw = self._sct.grab({
-            "left": self.roi["x"], "top": self.roi["y"],
-            "width": self.roi["w"], "height": self.roi["h"],
-        })
-        frame = np.array(raw)[:, :, :3]
-
         now = time.perf_counter() - self.t0
+        try:
+            raw = self._sct.grab({
+                "left": self.roi["x"], "top": self.roi["y"],
+                "width": self.roi["w"], "height": self.roi["h"],
+            })
+        except Exception as e:
+            # 해상도 변경, 모니터 분리 등으로 ROI가 화면 밖으로 나가도
+            # 죽으면 안 된다. 이번 프레임은 건너뛴다 - 관측이 없어도
+            # 이미 추적 중인 버프는 타이머로만 만료되므로 안전하다.
+            if not self._warned_capture:
+                print(f"[경고] 화면 캡처 실패: {e}. ROI를 다시 잡아야 할 수 있습니다.")
+                self._warned_capture = True
+            self._status = ("error", "")
+            return self.tracker.snapshot(now)
+        self._warned_capture = False
+
+        frame = np.array(raw)[:, :, :3]
         res = self.rec.read_frame(frame)
         self.tracker.update(res.observations, now)
+
+        if res.grid is None:
+            self._status = ("searching", "")
+        else:
+            self._status = ("ok", f"{res.visible}개")
 
         if self.debug:
             self._log(res, now)
         return self.tracker.snapshot(now)
+
+    def status(self):
+        return self._status
 
     def _log(self, res, now: float) -> None:
         if res.grid is None:
@@ -148,8 +169,12 @@ def main() -> int:
     w.show()
     apply_win_flags(w, click_through=not args.setup)
 
+    def tick():
+        w.set_rows(feed.step())
+        w.set_status(*feed.status())
+
     timer = QTimer()
-    timer.timeout.connect(lambda: w.set_rows(feed.step()))
+    timer.timeout.connect(tick)
     timer.start(int(1000 / FPS))
 
     if args.setup:

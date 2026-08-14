@@ -39,6 +39,8 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 ICON_DB_PATH = Path(__file__).with_name("icons.json")
+# 등록 시점의 아이콘 타일 원본. 오버레이가 실제 아이콘을 그리는 데 쓴다.
+ICON_IMG_DIR = Path(__file__).with_name("icon_images")
 
 HASH_SIZE = 8          # 8x8 = 64비트
 SAT_MIN = 60           # 색상 계산에 쓸 최소 채도 (어두운 실루엣 제외)
@@ -48,6 +50,18 @@ SAT_MIN = 60           # 색상 계산에 쓸 최소 채도 (어두운 실루엣
 # 그 사이를 넉넉히 가르되 정탐 쪽에 여유를 더 뒀다.
 MAX_HAM = 10           # 이보다 멀면 다른 아이콘
 MAX_HUE_DEG = 20.0     # 이보다 색이 다르면 다른 아이콘
+
+# 화질이 떨어지는 소스(방송 영상, 재압축된 캡처) 대응.
+# dHash는 밝기 미세구조를 보므로 압축에 흔들려 해밍이 부풀지만,
+# 평균 Hue는 압축에 강해 거의 그대로 남는다. 방송 영상 실측:
+#
+#     같은 아이콘: 해밍 9~15,  Hue 2~7도
+#     다른 아이콘: 해밍 17~27, Hue 22~176도
+#
+# 색이 아주 가까울 때만 모양 쪽을 조금 더 봐준다. 두 조건을 모두
+# 요구하므로 색이 비슷한 것만으로는 통과하지 못한다.
+TIGHT_HUE_DEG = 8.0    # 이보다 색이 가까우면
+RELAXED_HAM = 16       # 해밍을 여기까지 허용
 
 
 # ----------------------------------------------------------------------
@@ -162,11 +176,16 @@ class IconBook:
         max_ham: int = MAX_HAM,
         max_hue: float = MAX_HUE_DEG,
         shift: int = 1,
+        relax_on_hue: bool = True,
     ) -> MatchResult:
         """가장 가까운 아이콘. 없으면 buff_id=None.
 
         shift: 이만큼의 픽셀 어긋남까지 감안해 최소 거리를 취한다.
         정렬 오차가 오인의 주된 원인이므로 0으로 두지 말 것.
+
+        relax_on_hue: 색이 아주 가까우면(TIGHT_HUE_DEG) 해밍을
+        RELAXED_HAM까지 봐준다. 압축으로 모양이 흐려진 소스 대응.
+        임계값 자체를 실험할 때는 False로 꺼 두면 된다.
         """
         if not self.entries:
             return MatchResult(None, 64, 0.0)
@@ -181,7 +200,19 @@ class IconBook:
                 d = min(hamming(h, th) for h in cand_hashes)
                 hg = hue_distance(hue, thue)
                 if d > max_ham or hg > max_hue:
-                    continue
+                    # 색이 거의 일치하면 모양 쪽만 조금 더 봐준다.
+                    # 무채색(hue_distance가 0을 돌려주는 경우)은 색을
+                    # 근거로 쓸 수 없으므로 완화 대상에서 뺀다.
+                    relaxable = (
+                        relax_on_hue
+                        and hue is not None
+                        and thue is not None
+                        and hg <= TIGHT_HUE_DEG
+                        and d <= RELAXED_HAM
+                        and hg <= max_hue
+                    )
+                    if not relaxable:
+                        continue
                 # 색이 확실히 다르면 모양이 비슷해도 배제된다.
                 # 동점일 때는 색이 가까운 쪽을 택한다.
                 if best is None or (d, hg) < (best[0], best[1]):
@@ -202,8 +233,12 @@ class IconBook:
     def load(path: Path = ICON_DB_PATH) -> "IconBook":
         if not path.exists():
             return IconBook()
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        return IconBook({bid: IconEntry.from_dict(bid, v) for bid, v in raw.items()})
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            return IconBook({bid: IconEntry.from_dict(bid, v) for bid, v in raw.items()})
+        except Exception:
+            # DB가 깨졌다고 프로그램이 죽으면 안 된다. 빈 DB로 간다.
+            return IconBook()
 
 
 def _shifted_variants(tile: np.ndarray, shift: int) -> List[np.ndarray]:

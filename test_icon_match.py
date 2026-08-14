@@ -186,3 +186,57 @@ class TestIdentifyCells(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestHueRelaxation(unittest.TestCase):
+    """압축으로 모양이 흐려진 소스 대응.
+
+    dHash는 밝기 미세구조를 보므로 영상 압축에 흔들리지만, 평균 Hue는
+    거의 그대로 남는다. 색이 아주 가까울 때만 해밍을 더 봐주는 규칙이
+    실제로 그렇게 동작하는지 고정한다.
+
+    해밍 거리를 정확히 통제하려고 하위 k비트를 뒤집고 shift=0으로 둔다.
+    (시프트를 켜면 변형본 중 최소 거리를 취해 값이 흔들린다)
+    """
+
+    def setUp(self):
+        from icon_match import IconEntry
+
+        self.IconEntry = IconEntry
+        self.t = tile(200, seed=5)
+        self.h = dhash(self.t)
+        self.hue = mean_hue(self.t)
+
+    def _book(self, flip_bits: int, hue_shift: float = 0.0):
+        mask = (1 << flip_bits) - 1
+        return IconBook({
+            "x": self.IconEntry("x", [self.h ^ mask], [self.hue + hue_shift])
+        })
+
+    def test_degraded_shape_matches_when_hue_is_near(self):
+        # 해밍 13 (기본 임계 10 초과) + 색은 거의 동일 -> 완화로 통과
+        res = self._book(13, hue_shift=3.0).match(self.t, shift=0)
+        self.assertEqual(res.buff_id, "x")
+        self.assertEqual(res.distance, 13)
+
+    def test_rejected_when_shape_too_far_even_if_hue_matches(self):
+        # 색이 같아도 모양이 RELAXED_HAM(16)을 넘으면 거부
+        res = self._book(20, hue_shift=1.0).match(self.t, shift=0)
+        self.assertIsNone(res.buff_id)
+
+    def test_rejected_when_hue_not_close_enough(self):
+        # 해밍은 완화 범위 안이지만 색이 TIGHT_HUE_DEG(8도)를 넘으면 거부
+        res = self._book(13, hue_shift=15.0).match(self.t, shift=0)
+        self.assertIsNone(res.buff_id)
+
+    def test_relaxation_can_be_disabled(self):
+        res = self._book(13, hue_shift=1.0).match(
+            self.t, shift=0, relax_on_hue=False
+        )
+        self.assertIsNone(res.buff_id)
+
+    def test_strict_match_still_works(self):
+        # 완화와 무관하게 원래 경로는 그대로여야 한다
+        res = self._book(2, hue_shift=1.0).match(self.t, shift=0)
+        self.assertEqual(res.buff_id, "x")
+        self.assertEqual(res.distance, 2)
