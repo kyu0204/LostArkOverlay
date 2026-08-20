@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -305,10 +306,134 @@ class Editor(QWidget):
                 f.unlink()
 
 
+class SettingsTab(QWidget):
+    """해상도 / 버프 UI 배율 / 표시 칸수.
+
+    왜 배율을 물어보는가
+    --------------------
+    셀 크기와 간격은 해상도와 게임 UI 배율에 함께 달려 있다. 같은
+    1920x1080에서도 배율에 따라 21px / 26px로 갈린다.
+
+    다만 배율값(100%, 120% ...)을 픽셀로 바꾸는 표는 없다. 그래서 배율은
+    **프로필 이름**으로만 쓰고, 실제 픽셀 값은 측정해서 그 이름 아래에
+    저장한다. 쓰다 보면 배율별 표가 채워진다.
+
+    저장이 필요한 이유는 실측으로 확인됐다. 버프가 적을 때 켜면 기하를
+    잘못 잡는다(버프 2개에서 pitch 14). 전투 전에 켜는 것은 흔한 일이고,
+    한 번 잘못 잡으면 위상이 고정돼 그 세션 내내 인식이 죽는다.
+    저장된 값이 있으면 버프가 없어도 정확하게 시작한다.
+    """
+
+    def __init__(self):
+        super().__init__()
+        import config
+
+        self.config = config
+        app = QApplication.instance()
+        self.key = config.screen_key(app)
+        saved = config.get_settings(self.key)
+
+        form = QVBoxLayout(self)
+        form.addWidget(QLabel(
+            "게임 환경을 알려주면 그 조합으로 측정값을 따로 저장합니다.\n"
+            "저장된 값이 있으면 버프가 하나도 없을 때 켜도 정확하게 시작합니다."
+        ))
+
+        grid = QGridLayout()
+        detected = "-"
+        if app is not None:
+            geo = app.primaryScreen().geometry()
+            detected = f"{geo.width()}x{geo.height()}"
+
+        grid.addWidget(QLabel("해상도"), 0, 0)
+        self.res_edit = QLineEdit(str(saved.get("resolution") or detected))
+        self.res_edit.setFixedWidth(160)
+        grid.addWidget(self.res_edit, 0, 1)
+        grid.addWidget(QLabel(f"(자동 감지: {detected} / 프리셋 키: {self.key})"), 0, 2)
+
+        grid.addWidget(QLabel("버프 UI 배율"), 1, 0)
+        self.scale_edit = QLineEdit(str(saved.get("ui_scale") or ""))
+        self.scale_edit.setPlaceholderText("예: 100")
+        self.scale_edit.setFixedWidth(160)
+        grid.addWidget(self.scale_edit, 1, 1)
+        grid.addWidget(QLabel("게임 설정의 UI 배율. 측정값을 이 이름으로 저장합니다"), 1, 2)
+
+        grid.addWidget(QLabel("버프 표시 칸수"), 2, 0)
+        self.slots_edit = QLineEdit(str(saved.get("slots") or ""))
+        self.slots_edit.setPlaceholderText("예: 16")
+        self.slots_edit.setFixedWidth(160)
+        grid.addWidget(self.slots_edit, 2, 1)
+        grid.addWidget(QLabel("화면만 봐서는 알 수 없는 값이라 직접 받습니다"), 2, 2)
+        form.addLayout(grid)
+
+        self.geom_label = QLabel()
+        self.geom_label.setStyleSheet("color:#888;")
+        form.addWidget(self.geom_label)
+        self._refresh_geom()
+
+        row = QHBoxLayout()
+        save = QPushButton("설정 저장")
+        save.setFixedWidth(110)
+        save.clicked.connect(self.save)
+        row.addWidget(save)
+
+        clear = QPushButton("측정값 지우기")
+        clear.setFixedWidth(130)
+        clear.clicked.connect(self.clear_geometry)
+        row.addWidget(clear)
+
+        self.status = QLabel("")
+        row.addWidget(self.status, 1)
+        form.addLayout(row)
+        form.addStretch()
+
+    def _scale(self):
+        return self.scale_edit.text().strip() or None
+
+    def _refresh_geom(self) -> None:
+        g = self.config.get_profile(self.key, self._scale())
+        if g:
+            self.geom_label.setText(
+                f"저장된 측정값: 셀 {g.get('cell')}px, 피치 {g.get('pitch')}, "
+                f"세로오프셋 {g.get('icon_top')}, 위상 {g.get('phase')}"
+            )
+        else:
+            self.geom_label.setText(
+                "저장된 측정값 없음 — 버프가 여러 개 보일 때 앱을 켜면 그때 측정해 저장합니다."
+            )
+
+    def save(self) -> None:
+        slots = self.slots_edit.text().strip()
+        if slots:
+            try:
+                if int(slots) <= 0:
+                    raise ValueError
+            except ValueError:
+                QMessageBox.warning(self, "확인 필요", "칸수는 1 이상의 숫자여야 합니다.")
+                return
+        self.config.put_settings(self.key, {
+            "resolution": self.res_edit.text().strip(),
+            "ui_scale": self._scale(),
+            "slots": int(slots) if slots else None,
+        })
+        self._refresh_geom()
+        self.status.setText("저장했습니다. 앱을 다시 켜면 반영됩니다.")
+
+    def clear_geometry(self) -> None:
+        """측정값만 버린다. UI 배율을 바꿨을 때 쓴다."""
+        self.config.put_profile(self.key, self._scale(), {})
+        self._refresh_geom()
+        self.status.setText("측정값을 지웠습니다. 다음 실행에 다시 측정합니다.")
+
+
 def main() -> int:
     app = QApplication(sys.argv)
-    w = Editor()
-    w.show()
+    tabs = QTabWidget()
+    tabs.setWindowTitle("로스트아크 버프 오버레이 설정")
+    tabs.resize(920, 640)
+    tabs.addTab(Editor(), "버프")
+    tabs.addTab(SettingsTab(), "설정")
+    tabs.show()
     return app.exec()
 
 

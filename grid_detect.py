@@ -176,6 +176,129 @@ def pitch_by_autocorr(roi_bgr, lo: int = 12, hi: int = 60):
     return float(k), float(ac[k])
 
 
+def _edge_profile(band_bgr: np.ndarray) -> np.ndarray:
+    """열별 세로 경계 세기. 아이콘 좌우 테두리에서 봉우리가 선다."""
+    gray = cv2.cvtColor(band_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    return np.abs(cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)).sum(axis=0)
+
+
+def _span_at_pitch(prof: np.ndarray, pitch: float, min_cells: int = 3):
+    """주기가 실제로 이어지는 가로 구간을 찾는다. 반환: (x_left, x_right).
+
+    버프바는 오른쪽 끝이 고정이고 왼쪽으로 늘어난다. 그래서 가장 강한
+    봉우리에서 출발해 한 칸씩 좌우로 뻗으며, 그 자리에 봉우리가 있는지
+    확인한다. 화면에는 스킬바나 파티창처럼 다른 주기 구조도 있으므로
+    '주기가 끊기지 않는 구간'만 취해야 버프바만 남는다.
+    """
+    if pitch < 4 or len(prof) < pitch * min_cells:
+        return None
+
+    smooth = cv2.GaussianBlur(prof.reshape(1, -1), (0, 0), 1.0).ravel()
+    thr = float(np.percentile(smooth, 75))
+    tol = max(2, int(round(pitch * 0.25)))
+
+    def supported(x: float) -> bool:
+        a, b = int(round(x)) - tol, int(round(x)) + tol + 1
+        a, b = max(0, a), min(len(smooth), b)
+        return a < b and float(smooth[a:b].max()) >= thr
+
+    start = float(np.argmax(smooth))
+    left = right = start
+    while supported(left - pitch):
+        left -= pitch
+    while supported(right + pitch):
+        right += pitch
+    if (right - left) < pitch * (min_cells - 1):
+        return None
+    return int(round(left)), int(round(right))
+
+
+def locate_buff_bar(screen_bgr: np.ndarray, slots: Optional[int] = None,
+                    band_top: float = 0.70, min_pitch: int = 18,
+                    max_pitch: int = 36):
+    """화면 전체에서 버프바를 찾아 ROI를 돌려준다. 실패하면 None.
+
+    ROI를 사람이 드래그하지 않아도 되게 하는 것이 목적이다. 좌표를
+    해상도별 표로 들고 있는 방법은 쓰지 않는다. 같은 1920x1080에서도
+    UI 배율에 따라 아이콘이 21px과 26px로 갈리므로 해상도는 키가 될 수
+    없기 때문이다(README '실측값' 참고).
+
+    버프바는 화면 하단에서 가장 강한 주기 구조다. 실측 두 캡처 모두
+    상위 후보가 실제 위치 ±6px 안에 몰렸고, 스킬바나 파티창은 앞서지
+    않았다.
+
+    slots: 게임의 버프 표시 칸수를 알고 있으면 넘긴다. 오른쪽 끝이
+           고정이므로 거기서 slots*pitch만큼 왼쪽으로 잡으면 폭이
+           정확해진다. 모르면 주기가 이어지는 구간으로 추정한다.
+    """
+    if screen_bgr.ndim != 3:
+        return None
+    h, w = screen_bgr.shape[:2]
+    icon_h = 30
+
+    def scan(ys):
+        """(순위값, y, 피치). 순위값 = 주기 점수 x 신호량.
+
+        주기 점수만 보면 아이콘 행이 아니라 위쪽 테두리 몇 줄만 걸친
+        창이 이긴다. 내부 무늬가 없어 주기가 더 깨끗하기 때문이다
+        (실측: 바가 y=900인데 y=872가 0.897로 1등). 창에 실제로 아이콘이
+        얼마나 들어왔는지를 함께 봐야 제자리를 고른다.
+        """
+        out = []
+        for y in ys:
+            if y < 0 or y + icon_h > h:
+                continue
+            win = screen_bgr[y:y + icon_h, :]
+            p, s = pitch_by_autocorr(win)
+            if p is None or not (min_pitch <= p <= max_pitch):
+                continue
+            energy = float(_edge_profile(win).sum())
+            out.append((s * energy, y, p))
+        return out
+
+    # 성기게 훑고, 가장 좋은 자리 근처만 촘촘히 다시 본다
+    coarse = scan(range(int(h * band_top), h - icon_h, 4))
+    if not coarse:
+        return None
+    top = max(coarse)[1]
+    cands = scan(range(top - 6, top + 7)) or coarse
+    cands.sort(reverse=True)
+
+    # 주기 점수가 높아도 그 자리에서 구간이 안 잡힐 수 있다(스택 표시 행에
+    # 걸치는 등). 점수 순으로 훑어 구간까지 잡히는 자리를 고른다.
+    picked = None
+    for rank_val, y, pitch in cands[:8]:
+        span = _span_at_pitch(_edge_profile(screen_bgr[y:y + icon_h, :]), pitch)
+        if span is not None:
+            picked = (rank_val, y, pitch, span)
+            break
+    if picked is None:
+        return None
+    rank_val, y, pitch, (x_left, x_right) = picked
+
+    cell = int(round(pitch * 0.9))
+    if slots:
+        # 오른쪽 끝 기준으로 칸수만큼 왼쪽으로
+        x_left = int(round(x_right - (slots - 1) * pitch))
+
+    # 왼쪽에 한 칸 더 붙인다. 버프 표기 한도를 넘으면 맨 앞에 오버플로
+    # `+` 칸이 생기는데, 그 칸은 다른 아이콘보다 신호가 약해 구간 추정에서
+    # 잘려나간다(실측: 잘린 ROI에서 오버플로가 None이 됐다).
+    # 없을 때 빈 칸 하나가 더 들어오는 것은 미인식으로 남아 무해하다.
+    x_left = max(0, int(round(x_left - pitch)) - 2)
+    x_w = min(w - x_left, int(round(x_right + cell + 2 - x_left)))
+
+    # 찾은 자리보다 조금 위에서 시작한다.
+    # 세로 정렬 보정(Recognizer.recalibrate)은 아래로만 훑으므로, ROI가
+    # 아이콘보다 1px이라도 아래에서 시작하면 잘린 첫 줄을 되찾을 수 없다.
+    # 실측: y를 1px 낮게 잡았더니 14개 중 12개로 떨어졌다.
+    margin = 4
+    y_top = max(0, y - margin)
+    roi_h = min(h - y_top, int(round(cell * 1.85)) + margin)
+    return {"x": x_left, "y": y_top, "w": x_w, "h": roi_h,
+            "pitch": round(float(pitch), 2)}
+
+
 def detect_grid(roi_bgr, min_cells: int = 2):
     """ROI에서 셀 크기와 피치를 추정한다.
 

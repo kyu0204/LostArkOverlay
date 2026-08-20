@@ -47,13 +47,21 @@ def load_catalog() -> dict:
 class CaptureFeed:
     """ROI를 실제로 캡처해 인식한다."""
 
-    def __init__(self, roi: dict, tracker: BuffTracker, debug: bool = False):
+    def __init__(self, roi: dict, tracker: BuffTracker, debug: bool = False,
+                 screen_key: str = "", ui_scale=None):
         import mss
 
         self.roi = roi
         self.tracker = tracker
         self.debug = debug
-        self.rec = Recognizer()
+        self.screen_key = screen_key
+        self.ui_scale = ui_scale
+        # 저장된 기하가 있으면 측정 없이 그대로 쓴다. 버프가 적을 때
+        # 켜면 기하를 잘못 잡는데(실측: 버프 2개에서 pitch 14), 한 번
+        # 잘못 잡으면 위상이 고정돼 그 세션 내내 인식이 죽는다.
+        geom = config.get_profile(screen_key, ui_scale) if screen_key else None
+        self.rec = Recognizer(geometry=geom or None)
+        self._saved_geom = bool(geom)
         self._sct = mss.mss()
         self.t0 = time.perf_counter()
         self._warned_empty = False
@@ -95,6 +103,7 @@ class CaptureFeed:
             self._status = ("searching", "")
         else:
             self._status = ("ok", f"{res.visible}개")
+            self._maybe_save_geometry(res)
 
         if self.debug:
             self._log(res, now)
@@ -102,6 +111,24 @@ class CaptureFeed:
 
     def status(self):
         return self._status
+
+    # 측정값을 저장할 만한 프레임인지. 버프가 여러 개 잡혀야 기하를
+    # 믿을 수 있다. 실측: 버프 3개 이하에서는 피치부터 틀리게 나온다.
+    SAVE_MIN_VISIBLE = 5
+
+    def _maybe_save_geometry(self, res) -> None:
+        if self._saved_geom or not self.screen_key:
+            return
+        if res.visible < self.SAVE_MIN_VISIBLE:
+            return
+        geom = self.rec.geometry()
+        if not geom:
+            return
+        config.put_profile(self.screen_key, self.ui_scale, geom)
+        self._saved_geom = True
+        print(f"[안내] 버프바 기하를 저장했습니다 "
+              f"(셀 {geom['cell']}px, 피치 {geom['pitch']}). "
+              f"다음 실행부터는 측정 없이 바로 시작합니다.")
 
     def _log(self, res, now: float) -> None:
         if res.grid is None:
@@ -152,8 +179,10 @@ def main() -> int:
             print(f"    python roi_picker.py --name {args.roi}")
             return 1
         tracker = BuffTracker(load_catalog())
+        settings = config.get_settings(key)
         try:
-            feed = CaptureFeed(roi, tracker, debug=args.debug)
+            feed = CaptureFeed(roi, tracker, debug=args.debug,
+                               screen_key=key, ui_scale=settings.get("ui_scale"))
         except ImportError:
             print("mss가 필요합니다:  pip install mss")
             return 1

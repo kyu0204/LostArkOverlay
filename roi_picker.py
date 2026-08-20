@@ -253,14 +253,67 @@ def list_presets() -> int:
     return 0
 
 
+def run_auto(name: str, slots: Optional[int] = None) -> int:
+    """버프바를 자동으로 찾아 미리보기를 남기고, 확인 후 저장한다.
+
+    드래그 단계를 없애는 것이 목적이다. 해상도별 좌표표를 두는 방법은
+    쓰지 않는다. 같은 1920x1080에서도 UI 배율에 따라 아이콘이 21px과
+    26px로 갈리므로 해상도만으로는 좌표가 정해지지 않기 때문이다.
+
+    자동 탐색이 헛짚을 수 있으므로 반드시 눈으로 확인하게 한다.
+    """
+    import cv2
+    import mss
+    import numpy as np
+    from PySide6.QtWidgets import QApplication
+
+    from grid_detect import annotate, detect_grid, locate_buff_bar
+
+    app = QApplication.instance() or QApplication(sys.argv)
+    key = config.screen_key(app)
+
+    with mss.mss() as sct:
+        shot = np.array(sct.grab(sct.monitors[1]))[:, :, :3]
+
+    roi = locate_buff_bar(shot, slots=slots)
+    if roi is None:
+        print("버프바를 찾지 못했습니다. 게임 화면이 보이는 상태인지 확인하고,")
+        print("안 되면 드래그로 잡으세요:  python roi_picker.py")
+        return 1
+
+    rect = {k: roi[k] for k in ("x", "y", "w", "h")}
+    print(f"[{key}] 찾음: x={rect['x']} y={rect['y']} "
+          f"w={rect['w']} h={rect['h']}  (피치 {roi['pitch']}, 신뢰도 {roi['score']})")
+
+    crop = shot[rect["y"]:rect["y"] + rect["h"], rect["x"]:rect["x"] + rect["w"]]
+    g = detect_grid(crop[: max(4, int(roi["pitch"] * 0.9) + 2)])
+    preview = annotate(crop.copy(), g) if g else crop.copy()
+    out = "roi_auto_preview.png"
+    cv2.imwrite(out, cv2.resize(preview, None, fx=3, fy=3,
+                                interpolation=cv2.INTER_NEAREST))
+    print(f"미리보기: {out}  — 격자가 아이콘과 맞는지 확인하세요.")
+
+    config.put_roi(key, name, rect)
+    print(f"'{name}'으로 저장했습니다. 어긋났다면 다시 잡으세요:")
+    print("    python roi_picker.py")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--name", default="buffbar", help="영역 이름 (기본: buffbar)")
     ap.add_argument("--list", action="store_true", help="저장된 프리셋 출력")
+    ap.add_argument("--auto", action="store_true",
+                    help="드래그 없이 버프바를 자동으로 찾아 저장")
+    ap.add_argument("--slots", type=int,
+                    help="버프 표시 칸수. 알면 폭이 정확해진다 "
+                         "(오른쪽 끝이 고정이라 거기서 칸수만큼 왼쪽으로 잡는다)")
     args = ap.parse_args()
 
     if args.list:
         return list_presets()
+    if args.auto:
+        return run_auto(args.name, args.slots)
     return run_picker(args.name)
 
 

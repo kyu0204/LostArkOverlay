@@ -83,6 +83,7 @@ class Recognizer:
         glyphs: Optional[GlyphBook] = None,
         icon_row_h: Optional[int] = None,
         min_glyph_score: float = 0.86,
+        geometry: Optional[dict] = None,
     ):
         self.icons = icons if icons is not None else IconBook.load()
         self.glyphs = glyphs if glyphs is not None else GlyphBook.load()
@@ -99,6 +100,46 @@ class Recognizer:
         # 피치는 안정적으로 잡히지만 어디서 시작하는지는 ROI 왼쪽에 있는
         # 다른 UI에 낚일 수 있다. 한 번 맞춰두고 이후 검출에 강제한다.
         self._phase: Optional[float] = None
+        self._geom_locked = False
+        if geometry:
+            self.apply_geometry(geometry)
+
+    # ------------------------------------------------------------------
+    # 기하 저장/복원
+    # ------------------------------------------------------------------
+
+    def apply_geometry(self, geom: dict) -> None:
+        """저장해 둔 기하를 그대로 쓴다. 측정 단계를 건너뛴다.
+
+        버프가 적을 때 켜면 기하를 잘못 잡는다(실측: 버프 2개에서
+        pitch 14). 전투 전에 켜는 것은 흔한 일이므로, 잘 측정된 값을
+        저장해 두고 그대로 쓰는 편이 훨씬 안전하다.
+        """
+        pitch, cell = geom.get("pitch"), geom.get("cell")
+        if not pitch or not cell:
+            return
+        self._icon_top = int(geom.get("icon_top", 0))
+        self._phase = geom.get("phase")
+        count = int(geom.get("count", 0)) or 2
+        self._grid = Grid(
+            left=int(geom.get("left", 0)), cell=int(cell),
+            pitch=float(pitch), count=count,
+        )
+        self._calibrated = True     # 저장값이 있으면 시작 보정을 하지 않는다
+        self._geom_locked = True    # 매 프레임 재검출이 덮어쓰지 못하게 한다
+
+    def geometry(self) -> Optional[dict]:
+        """지금 쓰고 있는 기하. 저장해 두면 다음 실행에 재사용한다."""
+        if self._grid is None:
+            return None
+        return {
+            "pitch": round(float(self._grid.pitch), 3),
+            "cell": int(self._grid.cell),
+            "left": int(self._grid.left),
+            "count": int(self._grid.count),
+            "icon_top": int(self._icon_top),
+            "phase": None if self._phase is None else round(float(self._phase), 3),
+        }
 
     # ------------------------------------------------------------------
     # 그리드 캐시
@@ -149,6 +190,16 @@ class Recognizer:
     def reset_grid(self) -> None:
         self._grid = None
         self._miss_streak = 0
+        self._geom_locked = False
+
+    @staticmethod
+    def _fit_count(grid: Grid, width: int) -> Grid:
+        """ROI 폭 안에 들어가는 칸 수로 맞춘다. 나머지 기하는 그대로."""
+        count = 0
+        while int(round(grid.left + count * grid.pitch)) + grid.cell <= width:
+            count += 1
+        return Grid(left=grid.left, cell=grid.cell, pitch=grid.pitch,
+                    count=max(1, count))
 
     # ------------------------------------------------------------------
     # 세로 정렬
@@ -172,6 +223,33 @@ class Recognizer:
             left=int(round(left)), cell=grid.cell, pitch=grid.pitch, count=grid.count
         )
 
+    def _sweep(self, frame_bgr, saved_top: int, max_off: int, shift: int):
+        """세로 위치 x 가로 위상을 훑어 가장 많이 맞는 조합을 찾는다.
+
+        가로 위상은 성기게(3px) 본다. 정밀한 값은 호출부가 한 번 더
+        좁혀 찾는다. 전 조합을 촘촘히 보면 1초 가까이 걸린다.
+        """
+        best_top, best_dx, best_n = saved_top, 0.0, -1
+        for off in range(0, max_off + 1):
+            self._icon_top, self._grid = off, None
+            icon_row, _ = self._split_rows(frame_bgr)
+            if self.ensure_grid(icon_row, force=True) is None:
+                continue
+            icon_row, _ = self._split_rows(frame_bgr)
+            g = self._grid
+            for dx in range(0, max(1, int(round(g.pitch))), 3):
+                shifted = Grid(
+                    left=g.left - dx, cell=g.cell, pitch=g.pitch, count=g.count
+                )
+                if shifted.left < -g.pitch:
+                    break
+                n = len(identify_cells(
+                    icon_row, shifted.bounds(), self.icons, inset=2, shift=shift
+                ))
+                if n > best_n:
+                    best_top, best_dx, best_n = off, float(dx), n
+        return best_top, best_dx, best_n
+
     def recalibrate(self, frame_bgr: np.ndarray, max_off: int = 10) -> int:
         """아이콘 행의 시작 위치를 인식 결과로 찾는다.
 
@@ -187,31 +265,15 @@ class Recognizer:
         saved_top, saved_grid, saved_phase = self._icon_top, self._grid, self._phase
         self._phase = None          # 보정 중에는 이전 위상을 강제하지 않는다
 
-        best_top, best_dx, best_n = saved_top, 0.0, -1
-        for off in range(0, max_off + 1):
-            self._icon_top, self._grid = off, None
-            icon_row, _ = self._split_rows(frame_bgr)
-            if self.ensure_grid(icon_row, force=True) is None:
-                continue
-            icon_row, _ = self._split_rows(frame_bgr)
-            g = self._grid
-            # 세로 위치마다 가로 위상도 훑되, 여기서는 성기게(step) 본다.
-            # 정밀한 값은 아래에서 한 번만 다시 찾는다. 전 조합을 촘촘히
-            # 보면 조합 수가 곱해져 1초 가까이 걸린다.
-            #
-            # 보정 중에는 ±1px 시프트 탐색을 끈다(shift=0). 지금 하는 일이
-            # 바로 정렬 찾기라 중복이고, 켜두면 비용이 9배가 된다.
-            for dx in range(0, max(1, int(round(g.pitch))), 3):
-                shifted = Grid(
-                    left=g.left - dx, cell=g.cell, pitch=g.pitch, count=g.count
-                )
-                if shifted.left < -g.pitch:
-                    break
-                n = len(identify_cells(
-                    icon_row, shifted.bounds(), self.icons, inset=2, shift=0
-                ))
-                if n > best_n:
-                    best_top, best_dx, best_n = off, float(dx), n
+        best_top, best_dx, best_n = self._sweep(frame_bgr, saved_top, max_off, 0)
+        if best_n <= 0:
+            # 시프트 없이 못 찾았다. ±1px 여유를 켜고 다시 본다.
+            # 등록 당시와 크롭이 미세하게 달라지면 그 여유가 있어야
+            # 매칭된다. 비용이 9배라 빠른 경로를 먼저 쓴다.
+            best_top, best_dx, best_n = self._sweep(frame_bgr, saved_top, max_off, 1)
+            fine_shift = 1
+        else:
+            fine_shift = 0
 
         if best_n <= 0:
             # 어느 위치에서도 못 맞혔다. 근거가 없으니 원래대로 되돌린다.
@@ -232,7 +294,7 @@ class Recognizer:
                 if shifted.left < -g0.pitch:
                     break
                 n = len(identify_cells(
-                    icon_row, shifted.bounds(), self.icons, inset=2, shift=0
+                    icon_row, shifted.bounds(), self.icons, inset=2, shift=fine_shift
                 ))
                 if n > best_n:
                     best_dx, best_n = float(dx), n
@@ -266,9 +328,14 @@ class Recognizer:
         # 이라, 일부만 맞는 상태에서는 연속이 끊겨 영영 복구되지 않았다.
         # 비용은 프레임당 0.23ms로 전체의 1.3% 수준이라 캐시를 고집할
         # 이유가 없다.
-        grid = self.ensure_grid(icon_row, force=True)
-        if grid is None:
-            return FrameResult()
+        if self._geom_locked and self._grid is not None:
+            # 저장된 기하를 쓴다. ROI 폭에 맞춰 칸 수만 다시 센다.
+            grid = self._fit_count(self._grid, frame_bgr.shape[1])
+            self._grid = grid
+        else:
+            grid = self.ensure_grid(icon_row, force=True)
+            if grid is None:
+                return FrameResult()
 
         # 셀 크기를 알았으니 그 기준으로 다시 나눈다. 첫 프레임의
         # 임시 분할과 이후 프레임의 분할이 어긋나면, 등록해 둔 아이콘/
@@ -289,24 +356,41 @@ class Recognizer:
 
         matches = identify_cells(icon_row, grid.bounds(), self.icons, inset=inset)
 
+        # 복구 판단은 '버프를 맞혔는가'로 한다. matches에는 오버플로
+        # 카운터도 들어오는데, 그 `+` 아이콘은 정렬이 어긋난 자리에서도
+        # 곧잘 매칭된다. matches가 비었는지로만 보면 카운터 하나 때문에
+        # 연속 카운터가 영영 쌓이지 않아 복구가 안 된다(실측: 잘못된
+        # 위상이 60프레임 내내 고정됐다).
+        buff_hits = sum(1 for m in matches.values() if m.buff_id != OVERFLOW_ID)
+
         # 하나도 못 맞히면 세로 정렬이 어긋났을 수 있다. 몇 프레임 지켜본 뒤
         # 한 번만 훑는다(매 프레임 훑기엔 비싸다). 맞는 게 하나라도 있으면
         # 정렬은 옳다는 뜻이므로 건드리지 않는다.
-        if not matches:
+        if not buff_hits:
             self._miss_streak += 1
             if self._align_cooldown > 0:
                 self._align_cooldown -= 1
             elif self._miss_streak >= 10 and self.icons.entries:
-                before = self._icon_top
                 self._align_cooldown = 30
-                if self.recalibrate(frame_bgr) != before and self._grid is not None:
-                    self._miss_streak = 0
+                self.recalibrate(frame_bgr)
+                # 보정 뒤에는 세로 오프셋이 그대로여도 가로 위상만 바뀌었을
+                # 수 있다. '오프셋이 변했는지'로 판단하면 위상만 어긋난
+                # 경우를 놓쳐 영영 복구되지 않는다. 항상 다시 계산한다.
+                if self._grid is not None:
                     grid = self._grid
                     icon_row, text_row = self._split_rows(frame_bgr)
                     matches = identify_cells(
                         icon_row, grid.bounds(), self.icons, inset=inset
                     )
-            if not matches and self._miss_streak >= 30:
+                    buff_hits = sum(
+                        1 for m in matches.values() if m.buff_id != OVERFLOW_ID
+                    )
+                    if buff_hits:
+                        self._miss_streak = 0
+            if not buff_hits and self._miss_streak >= 30:
+                # 저장된 기하가 실제와 어긋났을 수 있다(UI 배율 변경 등).
+                # 잠금을 풀어 다시 측정하게 한다.
+                self._calibrated = False
                 self.reset_grid()
         else:
             self._miss_streak = 0

@@ -168,3 +168,59 @@ class TestAutocorrFallback(unittest.TestCase):
     def test_rejects_flat_image(self):
         # 아무 구조도 없으면 주기도 없다
         self.assertIsNone(detect_grid(np.full((28, 300, 3), 20, np.uint8)))
+
+
+class TestLocateBuffBar(unittest.TestCase):
+    """화면 전체에서 버프바를 찾는다 (드래그로 ROI를 잡지 않게 하려는 것).
+
+    해상도별 좌표표를 두지 않는 이유: 같은 1920x1080에서도 UI 배율에
+    따라 아이콘이 21px과 26px로 갈린다(README '실측값'). 해상도는
+    좌표를 결정하지 못하므로, 화면에서 직접 찾는 편이 맞다.
+    """
+
+    def _screen(self, bar_x=400, bar_y=900, W=1280, H=1000, **kw):
+        """하단에 버프바를 얹은 가짜 화면."""
+        scr = np.full((H, W, 3), 18, np.uint8)
+        bar = make_bar(**kw)
+        h, w = bar.shape[:2]
+        scr[bar_y:bar_y + h, bar_x:bar_x + w] = bar
+        return scr, bar_x, bar_y, w
+
+    def test_finds_bar_position(self):
+        from grid_detect import locate_buff_bar
+
+        scr, bx, by, bw = self._screen(n=10)
+        roi = locate_buff_bar(scr)
+        self.assertIsNotNone(roi, "버프바를 찾지 못했다")
+        # ROI는 바보다 조금 위에서 시작해야 한다.
+        # 세로 정렬 보정이 아래로만 훑으므로 위쪽 여유가 필요하다.
+        self.assertLessEqual(roi["y"], by)
+        self.assertGreaterEqual(roi["y"], by - 10)
+        self.assertAlmostEqual(roi["pitch"], 29.0, delta=2.0)
+
+    def test_roi_covers_the_bar(self):
+        from grid_detect import locate_buff_bar
+
+        scr, bx, by, bw = self._screen(n=10)
+        roi = locate_buff_bar(scr)
+        self.assertLessEqual(roi["x"], bx + 8)
+        self.assertGreaterEqual(roi["x"] + roi["w"], bx + bw - 30)
+
+    def test_slots_anchors_width_from_right(self):
+        # 버프바는 오른쪽 끝이 고정이고 왼쪽으로 늘어난다.
+        # 칸수를 주면 그만큼만 잡아야 한다.
+        from grid_detect import locate_buff_bar
+
+        scr, bx, by, bw = self._screen(n=10)
+        wide = locate_buff_bar(scr)
+        narrow = locate_buff_bar(scr, slots=4)
+        self.assertLess(narrow["w"], wide["w"])
+        # 오른쪽 끝은 그대로여야 한다
+        self.assertAlmostEqual(
+            narrow["x"] + narrow["w"], wide["x"] + wide["w"], delta=4
+        )
+
+    def test_returns_none_on_empty_screen(self):
+        from grid_detect import locate_buff_bar
+
+        self.assertIsNone(locate_buff_bar(np.full((1000, 1280, 3), 18, np.uint8)))

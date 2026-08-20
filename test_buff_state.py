@@ -136,19 +136,25 @@ class TestRefresh(unittest.TestCase):
     def test_refresh_extends_timer(self):
         self.t.update([Observation("synergy", 8.0)], now=0.0)
         self.t.update([], now=5.0)  # 밀려있는 동안
-        # 6초에 재사용 -> 앞으로 당겨져 다시 관측됨
+        # 6초에 재사용 -> 앞으로 당겨져 다시 관측됨.
+        # 시간이 늘어난 관측은 한 번으로 받아들이지 않는다(오독일 수 있다).
         self.t.update([Observation("synergy", 8.0)], now=6.0)
-        self.assertAlmostEqual(self.t.snapshot(6.0)[0]["remaining"], 8.0)
-        self.assertIn("synergy", self.t.active_ids)
+        self.assertLess(self.t.snapshot(6.0)[0]["remaining"], 8.0)
+        # 연속으로 확인되면 갱신으로 인정한다
+        self.t.update([Observation("synergy", 8.0)], now=6.1)
+        self.assertAlmostEqual(self.t.snapshot(6.1)[0]["remaining"], 8.0, places=1)
         # 원래대로면 8초에 만료됐어야 하지만 갱신됐으므로 살아있다
         self.t.update([], now=9.0)
         self.assertIn("synergy", self.t.active_ids)
 
     def test_observed_value_overrides_drifted_estimate(self):
-        # 추정 타이머가 어긋나 있어도 재관측되면 실측으로 교정
+        # 추정 타이머가 어긋나 있어도 재관측이 이어지면 실측으로 교정된다.
+        # 단 한 번으로는 안 된다 - 오독과 구분할 수 없기 때문이다.
         self.t.update([Observation("emperor", 12.0)], now=0.0)
         self.t.update([Observation("emperor", 3.0)], now=1.0)
-        self.assertAlmostEqual(self.t.snapshot(1.0)[0]["remaining"], 3.0)
+        self.assertGreater(self.t.snapshot(1.0)[0]["remaining"], 10.0)
+        self.t.update([Observation("emperor", 3.0)], now=1.1)
+        self.assertAlmostEqual(self.t.snapshot(1.1)[0]["remaining"], 3.0, places=1)
 
 
 class TestFallbackDoesNotRefresh(unittest.TestCase):
@@ -318,19 +324,74 @@ class TestMeasurementSmoothing(unittest.TestCase):
         self.t.update([Observation("x", 8.0)], now=1.4)   # 같은 표기 유지
         self.assertAlmostEqual(self.t.snapshot(1.4)[0]["remaining"], 8.5, places=2)
 
-    def test_new_reading_outside_tolerance_snaps(self):
-        # 갱신되어 시간이 늘면 실측으로 맞춘다
+    def test_new_reading_outside_tolerance_needs_confirmation(self):
+        # 갱신되어 시간이 늘면 맞추되, 연속 확인 후에 반영한다
         self.t.update([Observation("x", 4.0)], now=0.0)
         self.t.update([Observation("x", 12.0)], now=1.0)
-        self.assertAlmostEqual(self.t.snapshot(1.0)[0]["remaining"], 12.0)
+        self.assertLess(self.t.snapshot(1.0)[0]["remaining"], 12.0)
+        self.t.update([Observation("x", 12.0)], now=1.1)
+        self.assertAlmostEqual(self.t.snapshot(1.1)[0]["remaining"], 12.0, places=1)
 
-    def test_drifted_estimate_is_corrected(self):
+    def test_drifted_estimate_is_corrected_after_confirmation(self):
         self.t.update([Observation("x", 10.0)], now=0.0)
         self.t.update([Observation("x", 3.0)], now=1.0)   # 예측 9.0과 크게 다름
-        self.assertAlmostEqual(self.t.snapshot(1.0)[0]["remaining"], 3.0)
+        self.assertGreater(self.t.snapshot(1.0)[0]["remaining"], 8.0)
+        self.t.update([Observation("x", 3.0)], now=1.1)
+        self.assertAlmostEqual(self.t.snapshot(1.1)[0]["remaining"], 3.0, places=1)
 
     def test_sub_second_uses_finer_tolerance(self):
         # 1초 미만은 0.1초 단위로 표시되므로 허용 오차도 작아야 한다
         self.t.update([Observation("x", 0.8)], now=0.0)
         self.t.update([Observation("x", 0.5)], now=0.1)   # 예측 0.7, 차이 0.2
         self.assertAlmostEqual(self.t.snapshot(0.1)[0]["remaining"], 0.5, places=2)
+
+
+class TestTemporalValidation(unittest.TestCase):
+    """시간은 한 방향으로만 흐른다.
+
+    표기를 한 프레임만 보고 믿으면 오독이 그대로 타이머가 된다.
+    실측에서 '0.3초'를 '3.0'으로 읽는 오독을 관측했고, 없는 글자가
+    다른 숫자로 매칭되는 경우(5 -> 3, 점수 0.764)도 확인했다.
+    직전 표기에서 흐른 만큼 줄어든 값이 나와야 정상으로 본다.
+    """
+
+    def setUp(self):
+        self.t = BuffTracker({}, resync_confirm=2)
+
+    def test_single_impossible_drop_is_ignored(self):
+        self.t.update([Observation("x", 53.0)], now=0.0)
+        self.t.update([Observation("x", 18.0)], now=0.1)   # 0.1초에 35초가 사라질 수 없다
+        self.assertAlmostEqual(self.t.snapshot(0.1)[0]["remaining"], 52.9, places=1)
+
+    def test_persistent_drop_is_accepted(self):
+        # 계속 그렇게 보인다면 우리 타이머가 틀린 것이다. 교정해야 한다.
+        self.t.update([Observation("x", 53.0)], now=0.0)
+        self.t.update([Observation("x", 18.0)], now=0.1)
+        self.t.update([Observation("x", 18.0)], now=0.2)
+        self.assertAlmostEqual(self.t.snapshot(0.2)[0]["remaining"], 18.0, places=1)
+
+    def test_single_spurious_increase_does_not_extend(self):
+        self.t.update([Observation("x", 10.0)], now=0.0)
+        self.t.update([Observation("x", 30.0)], now=0.1)
+        self.assertLess(self.t.snapshot(0.1)[0]["remaining"], 11.0)
+
+    def test_confirmed_increase_is_a_refresh(self):
+        self.t.update([Observation("x", 10.0)], now=0.0)
+        self.t.update([Observation("x", 30.0)], now=0.1)
+        self.t.update([Observation("x", 30.0)], now=0.2)
+        self.assertAlmostEqual(self.t.snapshot(0.2)[0]["remaining"], 30.0, places=1)
+
+    def test_large_drop_after_hidden_period_is_normal(self):
+        # 밀려서 안 보이던 동안 줄어든 것은 흐른 시간으로 설명된다.
+        # 이것까지 막으면 재등장 시 동기화가 안 된다.
+        self.t.update([Observation("x", 20.0)], now=0.0)
+        self.t.update([], now=10.0)
+        self.t.update([Observation("x", 10.0)], now=10.0)
+        self.assertAlmostEqual(self.t.snapshot(10.0)[0]["remaining"], 10.0, places=1)
+
+    def test_normal_countdown_is_never_blocked(self):
+        # 한 눈금씩 정상적으로 줄어드는 흐름은 그대로 통과해야 한다
+        t = BuffTracker({})
+        for i, v in enumerate([9.0, 9.0, 8.0, 8.0, 7.0, 7.0, 6.0]):
+            t.update([Observation("x", v)], now=i * 0.3)
+        self.assertAlmostEqual(t.snapshot(1.8)[0]["remaining"], 6.9, places=1)

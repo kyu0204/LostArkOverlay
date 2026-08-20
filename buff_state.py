@@ -72,9 +72,15 @@ class BuffState:
     last_seen: float
     total: Optional[float]
     confidence: str = CONF_OBSERVED
-    # 마지막으로 화면에서 읽은 표기값. 표기가 바뀌는 순간을 잡으려면
-    # 이전 값과 비교해야 한다.
+    # 마지막으로 화면에서 읽은 표기값과 그 시각. 표기가 바뀌는 순간을
+    # 잡고, 새로 읽은 값이 시간 흐름에 맞는지 검증하는 데 쓴다.
     last_reading: Optional[float] = None
+    last_reading_at: float = 0.0
+    # 시간 흐름과 어긋난 관측의 후보. 한 프레임 오독으로 타이머가
+    # 흔들리지 않도록 연속으로 확인될 때만 받아들인다.
+    resync_candidate: Optional[float] = None
+    resync_candidate_at: float = 0.0
+    resync_count: int = 0
 
     @property
     def duration_known(self) -> bool:
@@ -112,6 +118,7 @@ class BuffTracker:
         catalog: Optional[Dict[str, dict]] = None,
         predict_after: float = 0.5,
         unknown_grace: float = 0.0,
+        resync_confirm: int = 2,
     ):
         """
         catalog: buff_id -> 정의 dict. JSON에서 그대로 로드 가능.
@@ -123,12 +130,16 @@ class BuffTracker:
                        없으니 안 보이는 순간 근거가 사라진다. 시간을
                        읽어둔 버프는 이 경로를 타지 않으므로 '미관측은
                        소멸 근거가 아니다'는 원칙은 그대로다.
+        resync_confirm: 시간 흐름과 어긋난 관측을 몇 번 연속 봐야
+                       받아들일지. 갱신이든 타이머 어긋남이든 한 프레임
+                       오독으로 흔들리지 않게 한다. 10Hz에서 2면 0.2초.
         """
         self.catalog: Dict[str, BuffDef] = {
             bid: BuffDef.from_dict(bid, raw) for bid, raw in (catalog or {}).items()
         }
         self.predict_after = predict_after
         self.unknown_grace = unknown_grace
+        self.resync_confirm = max(1, resync_confirm)
         self._active: Dict[str, BuffState] = {}
 
     # ------------------------------------------------------------------
@@ -173,17 +184,70 @@ class BuffTracker:
            딜사이클을 짜므로, 짧게 보여주는 쪽이 안전하다.
         """
         step = self._display_step(measured)
+        prev, prev_at = state.last_reading, state.last_reading_at
+
+        # 시간은 한 방향으로만 흐른다. 직전 표기에서 그동안 흐른 만큼
+        # 줄어든 값이 이번에 보여야 정상이다. 밀려서 안 보이던 동안
+        # 크게 줄어든 것도 여기서 자연히 설명된다.
+        expected = None if prev is None else prev - (now - prev_at)
+        tol = step * 1.5 + 0.2      # 표기 눈금 + 프레임 간격 여유
+
+        if expected is None or abs(measured - expected) <= tol:
+            state.resync_candidate = None
+            state.resync_count = 0
+            self._sync_timer(state, measured, now, step)
+            return
+
+        # 시간 흐름과 어긋난다. 한 프레임 오독일 수도, 실제 변화(갱신
+        # 또는 타이머 어긋남)일 수도 있어 한 번으로는 판단할 수 없다.
+        # 연속으로 같은 흐름이 확인될 때만 받아들인다.
+        self._note_resync(state, measured, now, step)
+
+    def _note_resync(
+        self, state: BuffState, measured: float, now: float, step: float
+    ) -> None:
+        """흐름에 어긋난 관측을 모았다가 연속으로 확인되면 반영한다.
+
+        위아래 모두 같은 방식으로 다룬다. 늘어난 쪽만 확인하고 줄어든
+        쪽을 영구히 버리면, 타이머가 실제로 어긋났을 때 영영 교정되지
+        않는다.
+
+        확인 중에도 시간은 흐르므로(30, 30, 29...) 후보도 같은 속도로
+        줄여가며 비교해야 한다.
+        """
+        cand = state.resync_candidate
+        if cand is not None:
+            cand_now = cand - (now - state.resync_candidate_at)
+            if abs(measured - cand_now) <= step * 1.5 + 0.2:
+                state.resync_count += 1
+            else:
+                state.resync_candidate, state.resync_count = measured, 1
+                state.resync_candidate_at = now
+        else:
+            state.resync_candidate, state.resync_count = measured, 1
+            state.resync_candidate_at = now
+
+        if state.resync_count >= self.resync_confirm:
+            state.resync_candidate = None
+            state.resync_count = 0
+            self._sync_timer(state, measured, now, step)
+
+    def _sync_timer(
+        self, state: BuffState, measured: float, now: float, step: float
+    ) -> None:
+        """검증을 통과한 표기값으로 타이머를 맞춘다."""
         predicted = state.remaining(now)
         prev = state.last_reading
         state.last_reading = measured
+        state.last_reading_at = now
 
         if prev is not None and abs((prev - step) - measured) < step * 0.05:
-            # 1. 표기가 방금 한 눈금 내려갔다
+            # 표기가 방금 한 눈금 내려갔다. 이 순간이 가장 정확하다.
             state.expire_at = now + measured + step * 0.9
         elif predicted is None or not (measured <= predicted < measured + step):
-            # 3. 구간 밖 -> 아래끝으로 보수적으로 맞춘다
+            # 구간 밖 -> 아래끝으로 보수적으로 맞춘다
             state.expire_at = now + measured
-        # 2. 구간 안이면 아무것도 하지 않는다
+        # 구간 안이면 그대로 흐르게 둔다
 
         state.total = max(state.total or 0.0, measured + step)
 
@@ -224,6 +288,7 @@ class BuffTracker:
                     # 첫 표기값을 남겨야 다음 프레임에 '표기가 바뀌었는지'를
                     # 알 수 있다. 비워두면 전환 순간을 영영 못 잡는다.
                     last_reading=obs.remaining if measured else None,
+                    last_reading_at=now,
                 )
             else:
                 if measured:

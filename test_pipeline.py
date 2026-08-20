@@ -331,3 +331,97 @@ class TestVerticalAlignment(unittest.TestCase):
         rec = Recognizer(icons=IconBook(), glyphs=GlyphBook())
         rec.read_frame(self._frame_with_margin(4))
         self.assertEqual(rec._icon_top, 0)
+
+
+class TestSavedGeometry(unittest.TestCase):
+    """측정한 기하를 저장해 두고 재사용한다.
+
+    버프가 적을 때 켜면 기하 자체를 잘못 잡는다. 실측(전투 캡처):
+
+        버프 15개 -> pitch 28.9   버프 3개 -> pitch 24.0
+        버프  6개 -> pitch 29.0   버프 2개 -> pitch 14.0
+
+    전투 전에 앱을 켜는 것은 흔한 일이고, 한 번 잘못 잡으면 위상이
+    고정돼 그 세션 내내 인식이 죽는다. 잘 측정된 값을 저장해 두면
+    버프가 없어도 정확하게 시작한다.
+    """
+
+    def setUp(self):
+        self.tiles = {"a": icon(10, 3), "b": icon(120, 3), "c": icon(250, 3)}
+        self.icons = IconBook()
+        for k, v in self.tiles.items():
+            self.icons.add(k, v[2:24, 2:24])
+
+    def _rec(self, **kw):
+        return Recognizer(icons=self.icons, glyphs=GlyphBook(), **kw)
+
+    def test_roundtrip(self):
+        a = self._rec()
+        frame = build_frame(list(self.tiles.values()))
+        for _ in range(3):
+            a.read_frame(frame)
+        geom = a.geometry()
+        self.assertIsNotNone(geom)
+
+        b = self._rec(geometry=geom)
+        res = b.read_frame(frame)
+        self.assertEqual(
+            sorted(o.buff_id for o in res.observations), ["a", "b", "c"]
+        )
+        self.assertAlmostEqual(b._grid.pitch, geom["pitch"], places=2)
+
+    def test_saved_pitch_survives_a_bad_frame(self):
+        # 버프가 거의 없는 프레임이 들어와도 저장된 피치를 지켜야 한다
+        a = self._rec()
+        frame = build_frame(list(self.tiles.values()))
+        for _ in range(3):
+            a.read_frame(frame)
+        geom = a.geometry()
+
+        b = self._rec(geometry=geom)
+        one = build_frame([self.tiles["a"]])
+        for _ in range(3):
+            b.read_frame(one)
+        self.assertAlmostEqual(b._grid.pitch, geom["pitch"], places=2)
+
+    def test_geometry_is_none_before_any_frame(self):
+        self.assertIsNone(self._rec().geometry())
+
+    def test_bad_geometry_is_ignored(self):
+        # 값이 비었으면 무시하고 평소대로 측정한다
+        b = self._rec(geometry={"pitch": None, "cell": None})
+        res = b.read_frame(build_frame(list(self.tiles.values())))
+        self.assertEqual(
+            sorted(o.buff_id for o in res.observations), ["a", "b", "c"]
+        )
+
+
+class TestRecoveryUsesBuffMatches(unittest.TestCase):
+    """복구 판단은 '버프를 맞혔는가'로 한다.
+
+    matches에는 오버플로 카운터도 들어오는데, 그 `+` 아이콘은 정렬이
+    어긋난 자리에서도 곧잘 매칭된다. matches가 비었는지로만 보면
+    카운터 하나 때문에 연속 카운터가 쌓이지 않아 복구가 안 된다
+    (실측: 잘못된 위상이 60프레임 내내 고정됐다).
+    """
+
+    def test_stale_phase_recovers_even_if_counter_matches(self):
+        tiles = {"a": icon(10, 3), "b": icon(120, 3), "c": icon(250, 3)}
+        icons = IconBook()
+        for k, v in tiles.items():
+            icons.add(k, v[2:24, 2:24])
+        counter = icon(100, 5)
+        icons.add(OVERFLOW_ID, counter[2:24, 2:24])
+
+        rec = Recognizer(icons=icons, glyphs=GlyphBook())
+        frame = build_frame([counter] + list(tiles.values()))
+        rec.read_frame(frame)
+        # 위상을 일부러 어긋나게 만든다
+        rec._phase = (rec._phase or 0.0) + rec._grid.pitch * 0.5
+        rec._grid = rec._apply_phase(rec._grid)
+
+        for _ in range(20):
+            res = rec.read_frame(frame)
+        self.assertGreaterEqual(
+            res.visible, 3, "카운터가 맞는 동안 복구가 막히면 안 된다"
+        )
