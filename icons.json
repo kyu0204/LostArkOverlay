@@ -1,46 +1,136 @@
 {
- "sup_purple": {
-  "hashes": [
-   "e8c8d8e0c8e8cc94"
-  ],
-  "hues": [
-   286.97938408579955
-  ],
-  "ignore": false
- },
- "sup_blue": {
-  "hashes": [
-   "cce0cccce8e8cc94"
-  ],
-  "hues": [
-   208.6953059380742
-  ],
-  "ignore": false
- },
- "sup_gold": {
-  "hashes": [
-   "ccecaa69cce8cc94"
-  ],
-  "hues": [
-   46.762282927354335
-  ],
-  "ignore": false
- },
- "sup_red": {
-  "hashes": [
-   "f0ecfcf0e8e8cc94"
-  ],
-  "hues": [
-   4.808135561305892
-  ],
-  "ignore": false
- },
  "overflow_counter": {
   "hashes": [
    "d020a0e0e060a012"
   ],
   "hues": [
    103.21564439524006
+  ],
+  "ignore": false
+ },
+ "buff_green_orb": {
+  "hashes": [
+   "f08a8917170e8ecc"
+  ],
+  "hues": [
+   89.53628450596567
+  ],
+  "ignore": false
+ },
+ "buff_crimson": {
+  "hashes": [
+   "f4ec45e10727420e"
+  ],
+  "hues": [
+   10.252481279500712
+  ],
+  "ignore": false
+ },
+ "buff_gold_figure": {
+  "hashes": [
+   "e667c5cc85cbcb93"
+  ],
+  "hues": [
+   40.299435964628046
+  ],
+  "ignore": false
+ },
+ "buff_blue_ghost": {
+  "hashes": [
+   "f0f0f0f0f0c0a2a9"
+  ],
+  "hues": [
+   195.64769812223167
+  ],
+  "ignore": false
+ },
+ "buff_green_arms": {
+  "hashes": [
+   "f5f5d48cdcce8f8e"
+  ],
+  "hues": [
+   98.30213885038049
+  ],
+  "ignore": false
+ },
+ "buff_gold_burst": {
+  "hashes": [
+   "d2e4c4e8e878ccf1"
+  ],
+  "hues": [
+   41.47658268119808
+  ],
+  "ignore": false
+ },
+ "buff_red_creature": {
+  "hashes": [
+   "033870ecdab43039"
+  ],
+  "hues": [
+   32.37689307670268
+  ],
+  "ignore": false
+ },
+ "buff_green_launcher": {
+  "hashes": [
+   "2e48f896d0d2ba1e"
+  ],
+  "hues": [
+   84.85419654997708
+  ],
+  "ignore": false
+ },
+ "buff_purple": {
+  "hashes": [
+   "e8d8d8e0c0e8e894"
+  ],
+  "hues": [
+   281.072251251958
+  ],
+  "ignore": false
+ },
+ "buff_blue_swords": {
+  "hashes": [
+   "ccf0cccce8e8c8d4"
+  ],
+  "hues": [
+   211.26299412595242
+  ],
+  "ignore": false
+ },
+ "buff_gold_rays": {
+  "hashes": [
+   "cce8aa49ccc8cc94"
+  ],
+  "hues": [
+   42.28603138202389
+  ],
+  "ignore": false
+ },
+ "buff_red_sword": {
+  "hashes": [
+   "fcdcfcf0e8e8cc94"
+  ],
+  "hues": [
+   4.055386574788291
+  ],
+  "ignore": false
+ },
+ "buff_purple_star": {
+  "hashes": [
+   "f0d6b28c6beaceba"
+  ],
+  "hues": [
+   271.16148184032716
+  ],
+  "ignore": false
+ },
+ "buff_purple_bloom": {
+  "hashes": [
+   "f4f2c8f2f2ccd850"
+  ],
+  "hues": [
+   299.4125428582474
   ],
   "ignore": false
  }

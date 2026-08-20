@@ -5,55 +5,102 @@
     "hash 필드는 아이콘 DB 구축 단계에서 채웁니다.",
     "priority: 낮을수록 위. 0=최우선, 99=기타"
   ],
-
-  "emperor": {
-    "name": "황제",
-    "type": "buff",
-    "duration": null,
-    "priority": 0,
-    "color": "#ffb300",
-    "hash": null
-  },
-  "judgment": {
-    "name": "심판",
-    "type": "instant",
-    "duration": null,
-    "priority": 0,
-    "color": "#ffb300",
-    "hash": null
-  },
-  "scale": {
-    "name": "저울",
-    "type": "buff",
-    "duration": null,
-    "priority": 0,
-    "color": "#ffb300",
-    "hash": null
-  },
-
-  "synergy_generic": {
-    "name": "시너지",
+  "buff_green_orb": {
+    "name": "수호",
     "type": "buff",
     "duration": null,
     "priority": 1,
-    "color": "#4fc3f7",
-    "hash": null
+    "color": "#81c784"
   },
-
-  "awakening_potion": {
-    "name": "각성포션",
+  "buff_crimson": {
+    "name": "진홍",
     "type": "buff",
     "duration": null,
     "priority": 2,
-    "color": "#81c784",
-    "hash": null
+    "color": "#ff5252"
   },
-  "atk_potion": {
-    "name": "공격력 물약",
+  "buff_gold_figure": {
+    "name": "황금",
+    "type": "buff",
+    "duration": null,
+    "priority": 2,
+    "color": "#ffb300"
+  },
+  "buff_blue_ghost": {
+    "name": "푸른혼",
+    "type": "buff",
+    "duration": null,
+    "priority": 2,
+    "color": "#4fc3f7"
+  },
+  "buff_green_arms": {
+    "name": "녹빛",
+    "type": "buff",
+    "duration": null,
+    "priority": 2,
+    "color": "#81c784"
+  },
+  "buff_gold_burst": {
+    "name": "해그리기",
+    "type": "buff",
+    "duration": null,
+    "priority": 0,
+    "color": "#ffb300"
+  },
+  "buff_red_creature": {
+    "name": "붉은짐승",
     "type": "buff",
     "duration": null,
     "priority": 3,
-    "color": "#81c784",
-    "hash": null
+    "color": "#ff5252"
+  },
+  "buff_green_launcher": {
+    "name": "발사기",
+    "type": "buff",
+    "duration": null,
+    "priority": 3,
+    "color": "#81c784"
+  },
+  "buff_purple": {
+    "name": "초각성기 뎀증",
+    "type": "buff",
+    "duration": null,
+    "priority": 2,
+    "color": "#ba9cf5"
+  },
+  "buff_blue_swords": {
+    "name": "초각 피증",
+    "type": "buff",
+    "duration": null,
+    "priority": 1,
+    "color": "#4fc3f7"
+  },
+  "buff_gold_rays": {
+    "name": "피해량 증가",
+    "type": "buff",
+    "duration": null,
+    "priority": 1,
+    "color": "#ffb300"
+  },
+  "buff_red_sword": {
+    "name": "공격력 증가",
+    "type": "buff",
+    "duration": null,
+    "priority": 0,
+    "color": "#ff5252"
+  },
+  "buff_purple_star": {
+    "name": "운명",
+    "type": "buff",
+    "duration": null,
+    "priority": 3,
+    "color": "#ba9cf5"
+  },
+  "buff_purple_bloom": {
+    "name": "보라꽃",
+    "type": "buff",
+    "duration": null,
+    "priority": 3,
+    "color": "#ba9cf5"
   }
 }

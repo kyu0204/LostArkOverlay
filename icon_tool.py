@@ -23,7 +23,7 @@
 같은 버프를 여러 프레임에서 등록하면 샘플이 쌓여 인식이 안정된다.
 배경이 다른 장면에서 2~3장씩 등록하는 것을 권한다.
 
-물약 퀵슬롯처럼 버프가 아닌 칸은 --ignore 로 등록해두면 결과에서
+버프가 아닌 것이 확실한 칸은 --ignore 로 등록해두면 결과에서
 자동으로 빠진다.
 """
 
@@ -215,7 +215,7 @@ def main() -> int:
     p.add_argument("--id")
     p.add_argument("--map", nargs="+", metavar="N=ID")
     p.add_argument("--ignore", action="store_true",
-                   help="버프가 아닌 칸으로 등록 (물약 퀵슬롯 등)")
+                   help="버프가 아닌 것이 확실한 칸으로 등록. 정체를 모르면 쓰지 말 것")
     p.set_defaults(func=cmd_add)
 
     p = sub.add_parser("test")
