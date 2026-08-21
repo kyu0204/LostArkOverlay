@@ -1,0 +1,47 @@
+{
+  "1920x1080@1": {
+    "roi": {
+      "buffbar": {
+        "x": 390,
+        "y": 914,
+        "w": 500,
+        "h": 48
+      }
+    },
+    "settings": {
+      "resolution": "1920x1080",
+      "hud_scale": "100",
+      "ui_scale": "100",
+      "slots": 14,
+      "target_scale": "100",
+      "target_slots": 10,
+      "stack_merge": true
+    },
+    "profile": {
+      "hud100-buff100": {
+        "pitch": 29.0,
+        "cell": 26,
+        "left": 34,
+        "count": 16,
+        "icon_top": 0,
+        "phase": 5.0
+      }
+    }
+  },
+  "1536x864@1.25": {
+    "roi": {
+      "buffbar": {
+        "x": 390,
+        "y": 914,
+        "w": 500,
+        "h": 48
+      },
+      "video": {
+        "x": 425,
+        "y": 913,
+        "w": 690,
+        "h": 46
+      }
+    }
+  }
+}
