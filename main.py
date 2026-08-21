@@ -48,18 +48,20 @@ class CaptureFeed:
     """ROI를 실제로 캡처해 인식한다."""
 
     def __init__(self, roi: dict, tracker: BuffTracker, debug: bool = False,
-                 screen_key: str = "", ui_scale=None):
+                 screen_key: str = "", scales=None):
         import mss
 
         self.roi = roi
         self.tracker = tracker
         self.debug = debug
         self.screen_key = screen_key
-        self.ui_scale = ui_scale
+        # 기하 프로필 이름을 정하는 값들(HUD 크기 + 버프 크기).
+        # 설정 탭이 넣어준 dict를 그대로 넘긴다.
+        self.scales = scales
         # 저장된 기하가 있으면 측정 없이 그대로 쓴다. 버프가 적을 때
         # 켜면 기하를 잘못 잡는데(실측: 버프 2개에서 pitch 14), 한 번
         # 잘못 잡으면 위상이 고정돼 그 세션 내내 인식이 죽는다.
-        geom = config.get_profile(screen_key, ui_scale) if screen_key else None
+        geom = config.get_profile(screen_key, scales) if screen_key else None
         self.rec = Recognizer(geometry=geom or None)
         self._saved_geom = bool(geom)
         self._sct = mss.mss()
@@ -124,7 +126,7 @@ class CaptureFeed:
         geom = self.rec.geometry()
         if not geom:
             return
-        config.put_profile(self.screen_key, self.ui_scale, geom)
+        config.put_profile(self.screen_key, self.scales, geom)
         self._saved_geom = True
         print(f"[안내] 버프바 기하를 저장했습니다 "
               f"(셀 {geom['cell']}px, 피치 {geom['pitch']}). "
@@ -149,8 +151,18 @@ class CaptureFeed:
             parts.append(f"오버플로=+{res.overflow}")
         if gap is not None and gap != 0:
             parts.append(f"불일치={gap:+d}")
-        ids = ",".join(o.buff_id for o in res.observations) or "-"
-        print("  ".join(parts) + f"  [{ids}]")
+        # 아이콘만 찍으면 인식이 잘 되는지는 보여도 정작 쓸모 있는
+        # 값인 남은 시간이 안 보인다. 읽은 값과 못 읽은 칸(?)을 함께
+        # 남겨야 실전에서 시간이 제대로 흐르는지 확인할 수 있다.
+        seen = ",".join(
+            f"{o.buff_id}:" + ("?" if o.remaining is None else f"{o.remaining:.1f}")
+            for o in res.observations
+        ) or "-"
+        held = ",".join(
+            f"{r['id']}:" + ("?" if r["remaining"] is None else f"{r['remaining']:.1f}")
+            for r in self.tracker.snapshot(now)
+        ) or "-"
+        print("  ".join(parts) + f"  보임[{seen}]  추적[{held}]")
 
 
 def main() -> int:
@@ -182,7 +194,7 @@ def main() -> int:
         settings = config.get_settings(key)
         try:
             feed = CaptureFeed(roi, tracker, debug=args.debug,
-                               screen_key=key, ui_scale=settings.get("ui_scale"))
+                               screen_key=key, scales=settings or None)
         except ImportError:
             print("mss가 필요합니다:  pip install mss")
             return 1

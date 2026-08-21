@@ -35,6 +35,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QColorDialog,
     QComboBox,
     QGridLayout,
@@ -307,7 +308,7 @@ class Editor(QWidget):
 
 
 class SettingsTab(QWidget):
-    """해상도 / 버프 UI 배율 / 표시 칸수.
+    """게임의 'UI 표시 설정' 6개를 그대로 받는다.
 
     왜 배율을 물어보는가
     --------------------
@@ -322,7 +323,23 @@ class SettingsTab(QWidget):
     잘못 잡는다(버프 2개에서 pitch 14). 전투 전에 켜는 것은 흔한 일이고,
     한 번 잘못 잡으면 위상이 고정돼 그 세션 내내 인식이 죽는다.
     저장된 값이 있으면 버프가 없어도 정확하게 시작한다.
+
+    항목을 여섯 개 다 받는 이유
+    ---------------------------
+    셋은 인식에 직접 쓰고, 셋은 기록만 한다. 기록만 하는 것도 받는
+    이유는 **인식이 틀어졌을 때 무엇이 달라졌는지 알기 위해서**다.
+    특히 '동시 적용 버프 중첩 표기'는 켜면 항목 수와 표기가 달라질 수
+    있는데 코드는 스택을 지원하지 않는다. 무엇으로 찍은 캡처인지
+    남겨두지 않으면 나중에 원인을 못 찾는다.
+
+    선택지는 게임 화면과 같은 값만 둔다. 자유 입력이면 오타가 그대로
+    프로필 이름이 되어 측정값이 엉뚱한 이름 아래 쌓인다.
     """
+
+    HUD_SCALES = ["80", "90", "100", "105", "110"]
+    BUFF_SCALES = ["80", "90", "100", "110", "120"]
+    SLOT_COUNTS = [str(n) for n in range(10, 18)]
+    UNSET = "(미지정)"
 
     def __init__(self):
         super().__init__()
@@ -335,8 +352,9 @@ class SettingsTab(QWidget):
 
         form = QVBoxLayout(self)
         form.addWidget(QLabel(
-            "게임 환경을 알려주면 그 조합으로 측정값을 따로 저장합니다.\n"
-            "저장된 값이 있으면 버프가 하나도 없을 때 켜도 정확하게 시작합니다."
+            "게임의 [UI 표시 설정]과 똑같이 맞춰주세요.\n"
+            "그 조합으로 측정값을 따로 저장해서, 버프가 하나도 없을 때 켜도"
+            " 정확하게 시작합니다."
         ))
 
         grid = QGridLayout()
@@ -351,19 +369,32 @@ class SettingsTab(QWidget):
         grid.addWidget(self.res_edit, 0, 1)
         grid.addWidget(QLabel(f"(자동 감지: {detected} / 프리셋 키: {self.key})"), 0, 2)
 
-        grid.addWidget(QLabel("버프 UI 배율"), 1, 0)
-        self.scale_edit = QLineEdit(str(saved.get("ui_scale") or ""))
-        self.scale_edit.setPlaceholderText("예: 100")
-        self.scale_edit.setFixedWidth(160)
-        grid.addWidget(self.scale_edit, 1, 1)
-        grid.addWidget(QLabel("게임 설정의 UI 배율. 측정값을 이 이름으로 저장합니다"), 1, 2)
+        self.hud_box = self._combo(self.HUD_SCALES, saved.get("hud_scale"))
+        self._row(grid, 1, "HUD 크기", self.hud_box,
+                  "UI 전체 배율. 버프창 위치가 따라 움직입니다")
 
-        grid.addWidget(QLabel("버프 표시 칸수"), 2, 0)
-        self.slots_edit = QLineEdit(str(saved.get("slots") or ""))
-        self.slots_edit.setPlaceholderText("예: 16")
-        self.slots_edit.setFixedWidth(160)
-        grid.addWidget(self.slots_edit, 2, 1)
-        grid.addWidget(QLabel("화면만 봐서는 알 수 없는 값이라 직접 받습니다"), 2, 2)
+        self.scale_box = self._combo(self.BUFF_SCALES, saved.get("ui_scale"))
+        self._row(grid, 2, "버프 크기", self.scale_box,
+                  "아이콘 크기와 간격을 정합니다. 측정값을 이 이름으로 저장")
+
+        self.slots_box = self._combo(self.SLOT_COUNTS, saved.get("slots"))
+        self._row(grid, 3, "버프 표시", self.slots_box,
+                  "칸수. 오른쪽 끝이 고정이라 폭을 확정하는 데 씁니다")
+
+        grid.addWidget(QLabel("— 아래는 기록용 —"), 4, 0, 1, 3)
+
+        self.tscale_box = self._combo(self.BUFF_SCALES, saved.get("target_scale"))
+        self._row(grid, 5, "타겟 UI 버프 크기", self.tscale_box,
+                  "보스 쪽 디버프 바. 지금은 읽지 않습니다")
+
+        self.tslots_box = self._combo(self.SLOT_COUNTS, saved.get("target_slots"))
+        self._row(grid, 6, "타겟 UI 버프 표시", self.tslots_box,
+                  "보스 쪽 디버프 바. 지금은 읽지 않습니다")
+
+        self.stack_box = QCheckBox("동시 적용 버프 중첩 표기")
+        self.stack_box.setChecked(bool(saved.get("stack_merge")))
+        grid.addWidget(self.stack_box, 7, 1)
+        grid.addWidget(QLabel("코드가 스택 표기를 아직 지원하지 않습니다 (꺼둘 것)"), 7, 2)
         form.addLayout(grid)
 
         self.geom_label = QLabel()
@@ -387,41 +418,70 @@ class SettingsTab(QWidget):
         form.addLayout(row)
         form.addStretch()
 
-    def _scale(self):
-        return self.scale_edit.text().strip() or None
+    # -- 위젯 만들기 ---------------------------------------------------
+
+    def _combo(self, values, current) -> QComboBox:
+        box = QComboBox()
+        box.addItem(self.UNSET)
+        box.addItems(values)
+        if current not in (None, ""):
+            at = box.findText(str(current))
+            box.setCurrentIndex(at if at >= 0 else 0)
+        box.setFixedWidth(160)
+        return box
+
+    def _row(self, grid, r, label, widget, hint) -> None:
+        grid.addWidget(QLabel(label), r, 0)
+        grid.addWidget(widget, r, 1)
+        grid.addWidget(QLabel(hint), r, 2)
+
+    @staticmethod
+    def _value(box: QComboBox):
+        text = box.currentText()
+        return None if text == SettingsTab.UNSET else text
+
+    # -- 저장 / 표시 ---------------------------------------------------
+
+    def _scales(self) -> dict:
+        """기하 프로필 이름을 정하는 값들."""
+        return {"hud_scale": self._value(self.hud_box),
+                "ui_scale": self._value(self.scale_box)}
 
     def _refresh_geom(self) -> None:
-        g = self.config.get_profile(self.key, self._scale())
+        g = self.config.get_profile(self.key, self._scales())
+        name = self.config.profile_key(self._scales())
         if g:
             self.geom_label.setText(
-                f"저장된 측정값: 셀 {g.get('cell')}px, 피치 {g.get('pitch')}, "
+                f"저장된 측정값 [{name}]: 셀 {g.get('cell')}px, 피치 {g.get('pitch')}, "
                 f"세로오프셋 {g.get('icon_top')}, 위상 {g.get('phase')}"
             )
         else:
             self.geom_label.setText(
-                "저장된 측정값 없음 — 버프가 여러 개 보일 때 앱을 켜면 그때 측정해 저장합니다."
+                f"저장된 측정값 없음 [{name}] — 버프가 여러 개 보일 때"
+                " 앱을 켜면 그때 측정해 저장합니다."
             )
 
     def save(self) -> None:
-        slots = self.slots_edit.text().strip()
-        if slots:
-            try:
-                if int(slots) <= 0:
-                    raise ValueError
-            except ValueError:
-                QMessageBox.warning(self, "확인 필요", "칸수는 1 이상의 숫자여야 합니다.")
-                return
+        slots = self._value(self.slots_box)
+        tslots = self._value(self.tslots_box)
         self.config.put_settings(self.key, {
             "resolution": self.res_edit.text().strip(),
-            "ui_scale": self._scale(),
+            "hud_scale": self._value(self.hud_box),
+            "ui_scale": self._value(self.scale_box),
             "slots": int(slots) if slots else None,
+            "target_scale": self._value(self.tscale_box),
+            "target_slots": int(tslots) if tslots else None,
+            "stack_merge": self.stack_box.isChecked(),
         })
         self._refresh_geom()
-        self.status.setText("저장했습니다. 앱을 다시 켜면 반영됩니다.")
+        msg = "저장했습니다. 앱을 다시 켜면 반영됩니다."
+        if self.stack_box.isChecked():
+            msg += "  (중첩 표기가 켜져 있어 인식이 흔들릴 수 있습니다)"
+        self.status.setText(msg)
 
     def clear_geometry(self) -> None:
-        """측정값만 버린다. UI 배율을 바꿨을 때 쓴다."""
-        self.config.put_profile(self.key, self._scale(), {})
+        """측정값만 버린다. HUD/버프 크기를 바꿨을 때 쓴다."""
+        self.config.put_profile(self.key, self._scales(), {})
         self._refresh_geom()
         self.status.setText("측정값을 지웠습니다. 다음 실행에 다시 측정합니다.")
 

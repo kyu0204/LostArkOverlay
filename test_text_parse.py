@@ -40,9 +40,19 @@ class TestToSeconds(unittest.TestCase):
         self.assertIsNone(to_seconds(f"9999{UNIT_SEC}"))
 
     def test_upper_bound_is_inclusive(self):
-        from text_parse import MAX_SECONDS
+        from text_parse import MAX_DISPLAY
 
-        self.assertEqual(to_seconds(f"{int(MAX_SECONDS)}{UNIT_SEC}"), MAX_SECONDS)
+        self.assertEqual(to_seconds(f"{int(MAX_DISPLAY)}{UNIT_SEC}"), MAX_DISPLAY)
+
+    def test_over_59_seconds_cannot_exist(self):
+        # 60초가 되면 '1분'으로 바뀌므로 60초 이상 표기는 존재하지 않는다.
+        for bad in ("60", "83", "99"):
+            self.assertIsNone(to_seconds(f"{bad}{UNIT_SEC}"), bad)
+
+    def test_minute_bound_applies_to_displayed_number(self):
+        # 상한은 환산한 초가 아니라 화면에 찍힌 수에 걸린다.
+        # '53분'은 3180초지만 표기된 수는 53이라 정상이다.
+        self.assertEqual(to_seconds(f"53{UNIT_MIN}", allow_minutes=True), 3180.0)
 
     def test_decimal(self):
         self.assertAlmostEqual(to_seconds(f"0.3{UNIT_SEC}"), 0.3)
@@ -54,14 +64,19 @@ class TestToSeconds(unittest.TestCase):
         for bad in ("", UNIT_SEC, "..", "1.2.3", "abc"):
             self.assertIsNone(to_seconds(bad), bad)
 
-    def test_leading_zero_rejected(self):
-        # 소수점을 놓쳐 '0.3초'가 '03초'로 읽히면 0.3이 3.0이 된다(10배).
-        # 게임은 '03초' 같은 표기를 하지 않으므로 형식 단계에서 막는다.
-        self.assertIsNone(to_seconds(f"03{UNIT_SEC}"))
-        self.assertIsNone(to_seconds(f"09{UNIT_SEC}"))
+    def test_leading_zero_means_decimal(self):
+        # 버프창이 표기하는 값은 1~59초와 0.1~0.9초뿐이다. 앞자리 0으로
+        # 시작하는 두 자리는 소수점을 놓친 것 외에 다른 해석이 없으므로
+        # 버리지 않고 0.X로 되살린다. '.' 템플릿이 없어도 값이 나온다.
+        self.assertAlmostEqual(to_seconds(f"03{UNIT_SEC}"), 0.3)
+        self.assertAlmostEqual(to_seconds(f"09{UNIT_SEC}"), 0.9)
         # 소수점이 제대로 읽힌 경우는 그대로 통과해야 한다
         self.assertAlmostEqual(to_seconds(f"0.3{UNIT_SEC}"), 0.3)
         self.assertAlmostEqual(to_seconds(f"0.8{UNIT_SEC}"), 0.8)
+        # 세 자리 이상은 어휘에 없다. 소수점을 놓친 것이 아니라
+        # 숫자를 잘못 읽은 것이므로 되살리지 않는다.
+        self.assertIsNone(to_seconds(f"003{UNIT_SEC}"))
+        self.assertIsNone(to_seconds(f"030{UNIT_SEC}"))
 
     def test_negative_rejected(self):
         self.assertIsNone(to_seconds(f"-5{UNIT_SEC}"))
@@ -225,6 +240,32 @@ class TestReadGroup(unittest.TestCase):
         text, _ = read_group([Glyph(0, 0, 8, 12, noise)], self.book, min_score=0.95)
         self.assertIsNone(text)
 
+    def _dot(self, x):
+        """밑선에 붙은 3x2 소수점 조각. 글자 밑선(y=12)에 맞춘다."""
+        return Glyph(x, 10, 3, 2, np.ones((2, 3), np.uint8))
+
+    def test_decimal_point_read_by_geometry(self):
+        # 소수점은 템플릿에 없다. 모양이 아니라 자리로 알아본다.
+        grp = [
+            Glyph(0, 0, 8, 12, self.digits["0"]),
+            self._dot(9),
+            Glyph(13, 0, 8, 12, self.digits["3"]),
+            Glyph(22, 0, 8, 12, self.sec),
+        ]
+        text, _ = read_group(grp, self.book, min_score=0.9)
+        self.assertEqual(text, f"0.3{UNIT_SEC}")
+
+    def test_tiny_piece_at_edge_is_not_a_decimal(self):
+        # 맨 앞/뒤의 작은 조각은 소수점 자리가 아니다. 배경 잡티일
+        # 뿐이므로 그냥 통과시키면 안 되고 매칭에 실패해야 한다.
+        grp = [
+            self._dot(0),
+            Glyph(4, 0, 8, 12, self.digits["3"]),
+            Glyph(13, 0, 8, 12, self.sec),
+        ]
+        text, _ = read_group(grp, self.book, min_score=0.9)
+        self.assertIsNone(text)
+
 
 class TestAdaptiveBinarize(unittest.TestCase):
     def test_dark_background(self):
@@ -331,3 +372,22 @@ class TestTextMasks(unittest.TestCase):
         img = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
         m = text_tophat_mask(img)
         self.assertLess(m[4:10, 8:32].mean(), 0.3)
+
+
+class TestRequireUnit(unittest.TestCase):
+    """단위 없는 문자열은 뒷글자를 놓친 부분 판독이다."""
+
+    def test_bare_number_rejected_when_unit_required(self):
+        # '15분'에서 '분'을 놓치면 '15'가 되고, 그대로 받으면
+        # 900초짜리 버프가 15초로 표시된다.
+        for bad in ("15", "1", "51", "0.3"):
+            self.assertIsNone(to_seconds(bad, require_unit=True), bad)
+
+    def test_unit_present_still_reads(self):
+        self.assertEqual(to_seconds(f"15{UNIT_SEC}", require_unit=True), 15.0)
+        self.assertAlmostEqual(to_seconds(f"0.3{UNIT_SEC}", require_unit=True), 0.3)
+        self.assertAlmostEqual(to_seconds(f"03{UNIT_SEC}", require_unit=True), 0.3)
+
+    def test_default_stays_lenient(self):
+        # 유틸로 직접 부르는 쪽은 깨지 않는다.
+        self.assertEqual(to_seconds("12"), 12.0)

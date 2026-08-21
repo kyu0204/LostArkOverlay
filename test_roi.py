@@ -156,3 +156,36 @@ class TestDrawGrid(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestProfileKey(unittest.TestCase):
+    """기하 프로필 이름 (config.profile_key)."""
+
+    def test_combines_both_scale_knobs(self):
+        # 게임에는 배율 손잡이가 둘 있다. 하나만 이름에 쓰면 서로 다른
+        # 기하가 같은 이름 아래 덮어써진다.
+        import config
+        a = config.profile_key({"hud_scale": "100", "ui_scale": "100"})
+        b = config.profile_key({"hud_scale": "110", "ui_scale": "100"})
+        c = config.profile_key({"hud_scale": "100", "ui_scale": "120"})
+        self.assertNotEqual(a, b)
+        self.assertNotEqual(a, c)
+        self.assertNotEqual(b, c)
+
+    def test_missing_knob_becomes_auto(self):
+        import config
+        self.assertEqual(config.profile_key({}), "hudauto-buffauto")
+        self.assertEqual(config.profile_key({"ui_scale": "100"}),
+                         "hudauto-buff100")
+
+    def test_scalar_keeps_old_behaviour(self):
+        # 설정 탭이 없던 시절 저장된 값과 섞이면 안 된다.
+        import config
+        self.assertEqual(config.profile_key("100"), "100")
+        self.assertEqual(config.profile_key(None), "auto")
+        self.assertEqual(config.profile_key(""), "auto")
+
+    def test_same_settings_give_same_name(self):
+        import config
+        s = {"hud_scale": "100", "ui_scale": "100", "slots": 14}
+        self.assertEqual(config.profile_key(s), config.profile_key(dict(s)))

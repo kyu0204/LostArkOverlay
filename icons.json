@@ -37,19 +37,23 @@
  },
  "buff_blue_ghost": {
   "hashes": [
-   "f0f0f0f0f0c0a2a9"
+   "f0f0f0f0f0c0a2a9",
+   "e1e1e1e1e0890442"
   ],
   "hues": [
-   195.64769812223167
+   195.64769812223167,
+   183.19440880748283
   ],
   "ignore": false
  },
  "buff_green_arms": {
   "hashes": [
-   "f5f5d48cdcce8f8e"
+   "f5f5d48cdcce8f8e",
+   "c953a8a989991d95"
   ],
   "hues": [
-   98.30213885038049
+   98.30213885038049,
+   71.08288282164882
   ],
   "ignore": false
  },
@@ -64,10 +68,12 @@
  },
  "buff_red_creature": {
   "hashes": [
-   "033870ecdab43039"
+   "033870ecdab43039",
+   "1a5278e4d8ac30b8"
   ],
   "hues": [
-   32.37689307670268
+   32.37689307670268,
+   43.504491629869214
   ],
   "ignore": false
  },
@@ -109,10 +115,12 @@
  },
  "buff_red_sword": {
   "hashes": [
-   "fcdcfcf0e8e8cc94"
+   "fcdcfcf0e8e8cc94",
+   "f1fdfcfdffeffedc"
   ],
   "hues": [
-   4.055386574788291
+   4.055386574788291,
+   6.4429048489066005
   ],
   "ignore": false
  },

@@ -40,8 +40,10 @@ GLYPH_W, GLYPH_H = 10, 14
 UNIT_SEC = "초"
 UNIT_MIN = "분"
 
-# 초 단위 버프에 나올 수 없는 크기. 넘으면 숫자를 잘못 읽은 것으로 본다.
-MAX_SECONDS = 300.0
+# 버프창에 찍힐 수 있는 수의 상한. 60초가 되면 '1분'으로 바뀌므로
+# '83초' 같은 표기는 존재할 수 없다. 단위와 무관하게 화면에 보이는
+# 수 자체가 59를 넘지 않는다. 넘으면 숫자를 잘못 읽은 것으로 본다.
+MAX_DISPLAY = 59.0
 
 
 # ----------------------------------------------------------------------
@@ -407,7 +409,8 @@ class GlyphBook:
 # ----------------------------------------------------------------------
 
 def to_seconds(
-    text: str, allow_minutes: bool = False, max_seconds: float = MAX_SECONDS
+    text: str, allow_minutes: bool = False, max_display: float = MAX_DISPLAY,
+    require_unit: bool = False,
 ) -> Optional[float]:
     """'19초' -> 19.0,  '0.3초' -> 0.3
 
@@ -418,8 +421,23 @@ def to_seconds(
     오인될 수 있는데, '53분'을 '53초'로 잘못 읽으면 3180초짜리 버프가
     53초로 표시되어 오히려 방해가 된다. 아예 후보에서 빼는 편이 안전하다.
 
-    max_seconds: 이 값을 넘으면 오독으로 보고 버린다. 초 단위 버프에
-    나올 수 없는 크기이므로 숫자를 잘못 읽었다는 신호다.
+    max_display: **화면에 찍힌 수**의 상한. 환산한 초가 아니다.
+    60초는 '1분'으로 바뀌므로 어느 단위든 표기되는 수는 59를 넘지
+    않는다. 그래서 '83초'는 존재할 수 없는 표기이고, 나왔다면 숫자를
+    잘못 읽은 것이다. ('3분'=180초처럼 환산값이 큰 것은 정상이므로
+    환산 후에 재면 멀쩡한 표기를 버리게 된다)
+
+    require_unit: 단위 글자가 없으면 거부한다. 인식 경로는 반드시
+    켜야 한다. 게임은 단위 없이 숫자만 찍지 않으므로, 단위가 빠진
+    문자열은 뒷글자를 놓친 **부분 판독**이라는 뜻이다. 부분 판독을
+    받아들이면 조용한 오독이 된다:
+
+        '15분'에서 '분'을 놓침 -> '15'  ->  15초   (실제 900초)
+        '15초'에서 '5초'를 놓침 -> '1'   ->   1초   (실제 15초)
+
+    실측(실전 캡처 31장): 판독 92건 중 17건(18%)이 단위 없는 부분
+    판독이었다. 기본값을 False로 둔 것은 단위 없는 문자열을 직접
+    넘겨 쓰는 유틸 호출을 깨지 않기 위해서다.
     """
     if not text:
         return None
@@ -431,17 +449,27 @@ def to_seconds(
             return None
         unit, body = 60.0, text[:-1]
     else:
+        if require_unit:
+            return None
         unit, body = 1.0, text
 
     if not body:
         return None
 
     # 앞자리 0 뒤에 숫자가 오는 표기는 게임에 없다('03초'는 '3초'로 뜬다).
-    # 이런 문자열이 나왔다면 소수점을 놓친 것이다. 실제로 '.' 템플릿이
-    # 없을 때 '0.3초'가 '03초'로 읽혀 3.0이 되는 오독을 관측했다.
-    # 10배 오차라 못 읽는 편이 훨씬 낫다.
+    # 이런 문자열이 나왔다면 소수점을 놓친 것이다.
+    #
+    # 버프창이 표기할 수 있는 값은 1~59초와 0.1~0.9초뿐이다. 어휘가
+    # 닫혀 있으므로 앞자리 0은 소수점 표기라는 뜻 외에 다른 해석이
+    # 없다. 그래서 버리지 않고 되살린다 - '.' 템플릿이 없어도 값을
+    # 복원할 수 있다.
+    #
+    # 세 자리 이상은 되살리지 않는다. 그런 표기는 어휘에 없으니
+    # 소수점을 놓친 것이 아니라 숫자를 잘못 읽은 것이다.
     if len(body) >= 2 and body[0] == "0" and body[1].isdigit():
-        return None
+        if len(body) != 2:
+            return None
+        body = "0." + body[1]
 
     try:
         value = float(body)
@@ -450,18 +478,29 @@ def to_seconds(
     if value < 0:
         return None
 
-    seconds = value * unit
-    if seconds > max_seconds:
+    if value > max_display:
         return None
-    return seconds
+    return value * unit
 
 
 def read_group(
     group: List[Glyph], book: GlyphBook, min_score: float = 0.86
 ) -> Tuple[Optional[str], float]:
-    """글자 그룹을 문자열로. 한 글자라도 확신이 없으면 실패로 본다."""
+    """글자 그룹을 문자열로. 한 글자라도 확신이 없으면 실패로 본다.
+
+    소수점만은 템플릿으로 맞히지 않고 기하로 집는다. 3x2px짜리라
+    모양 정보가 사실상 없어서, 10x14로 늘려 대조하면 그냥 채워진
+    사각형이 되어 아무 글자에나 어중간하게 붙는다. 대신 '아주 낮고,
+    밑선에 붙어 있고, 글자 사이에 있는' 조각은 소수점으로 본다 -
+    표기 어휘상 그 자리에 올 수 있는 것이 그것뿐이다.
+    """
     chars, worst = [], 1.0
-    for g in group:
+    baseline = max(g.y + g.h for g in group)
+    last = len(group) - 1
+    for i, g in enumerate(group):
+        if 0 < i < last and g.h <= 2 and abs((g.y + g.h) - baseline) <= 1:
+            chars.append(".")
+            continue
         label, score = book.match(g.img)
         if label is None or score < min_score:
             return None, score

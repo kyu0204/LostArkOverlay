@@ -82,7 +82,20 @@ def put_roi(key: str, name: str, rect: Dict[str, int]) -> None:
 # 두면 그 뒤로는 버프가 없어도 정확하게 시작한다.
 
 def profile_key(scale: Any) -> str:
-    """배율값을 프로필 이름으로. 입력이 없으면 'auto'."""
+    """배율값을 프로필 이름으로. 입력이 없으면 'auto'.
+
+    dict를 주면 기하에 영향을 주는 항목만 골라 조합한다. 게임에는
+    배율 손잡이가 둘 있는데(HUD 크기, 버프 크기) 어느 쪽을 바꿔도
+    픽셀이 달라진다. 하나만 이름으로 쓰면 서로 다른 기하가 같은
+    이름 아래 덮어써진다.
+
+    설정 탭이 없던 시절 저장된 값과 섞이지 않게, 스칼라를 받으면
+    예전 방식 그대로 둔다.
+    """
+    if isinstance(scale, dict):
+        hud = scale.get("hud_scale") or "auto"
+        buff = scale.get("ui_scale") or "auto"
+        return f"hud{hud}-buff{buff}"
     return "auto" if scale in (None, "") else str(scale)
 
 

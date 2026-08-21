@@ -515,7 +515,9 @@ class Recognizer:
                 text, _ = read_group(grp, self.glyphs, self.min_glyph_score)
                 if text is None:
                     continue
-                sec = to_seconds(text)
+                # 단위가 없으면 뒷글자를 놓친 부분 판독이다.
+                # 받아들이면 '15분'이 15초가 되는 식의 조용한 오독이 된다.
+                sec = to_seconds(text, require_unit=True)
                 if sec is not None:
                     out[ci] = sec
                     last_thr = thr
